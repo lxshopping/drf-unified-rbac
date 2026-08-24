@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "drf-unified-rbac"
+version = "0.1.0"
+description = "Reusable role-based authorization for Django REST Framework"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "Django>=5.2,<6.0",
+    "djangorestframework>=3.17,<4.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-django>=4.8",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
