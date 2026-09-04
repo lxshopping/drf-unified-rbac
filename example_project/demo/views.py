@@ -12,6 +12,7 @@ class DemoOrderViewSet(ViewSet):
         "list": "demo.order.view",
         "create": "demo.order.create",
         "approve": "demo.order.approve",
+        "destroy": "demo.order.delete",
     }
 
     def list(self, request):
@@ -27,3 +28,9 @@ class DemoOrderViewSet(ViewSet):
     def approve(self, request):
         return Response({"message": "order approved"})
 
+
+    def destroy(self, request, pk=None):
+        return Response(
+            {"message": f"order {pk} deleted"},
+            status=status.HTTP_204_NO_CONTENT
+            )

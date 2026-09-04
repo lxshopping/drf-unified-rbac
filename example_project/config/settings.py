@@ -62,14 +62,35 @@ USE_TZ = True
 STATIC_URL = "static/"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
+# REST_FRAMEWORK = {
+#     "DEFAULT_AUTHENTICATION_CLASSES": [
+#         "rest_framework.authentication.SessionAuthentication",
+#         "rest_framework.authentication.BasicAuthentication",
+#     ]
+# }
+
+# DRF_RBAC = {
+#     "AUTH_MODE": "local",
+# }
+
+
+
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
-        "rest_framework.authentication.SessionAuthentication",
-        "rest_framework.authentication.BasicAuthentication",
+        "drf_unified_rbac.authentication.KeycloakAuthentication",
     ]
 }
 
+
 DRF_RBAC = {
-    "AUTH_MODE": "local",
+    "AUTH_MODE": "sso",
+
+    "KEYCLOAK_ISSUER": "...",
+    "KEYCLOAK_CLIENT_ID": "cmdb-app",
 }
 
+DEFAULTS = {
+    "AUTH_MODE": "local",
+    "KEYCLOAK_ISSUER": None,
+    "KEYCLOAK_CLIENT_ID": None,
+}

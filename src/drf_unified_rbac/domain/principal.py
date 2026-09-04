@@ -19,3 +19,10 @@ class Principal:
             auth_source="local",
         )
 
+    @classmethod
+    def from_sso_claims(cls, claims: dict[str, Any]) -> "Principal":
+        return cls(
+            subject=str(claims["sub"]),
+            username=str(claims["preferred_username"]),
+            auth_source="sso",
+        )

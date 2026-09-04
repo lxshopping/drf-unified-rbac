@@ -12,5 +12,7 @@ def get_role_provider() -> BaseRoleProvider:
     auth_mode = get_rbac_setting("AUTH_MODE")
     if auth_mode == "local":
         return LocalRoleProvider()
+    if auth_mode == "sso":
+        return SSORoleProvider()
     raise ImproperlyConfigured(f"Unsupported AUTH_MODE: {auth_mode!r}")
 
