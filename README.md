@@ -1,16 +1,17 @@
 # drf-unified-rbac
 
-`drf-unified-rbac` is a reusable Django app that provides role-based authorization for Django REST Framework. V0.1 implements local RBAC with Django's existing user model; it deliberately does not implement authentication, OIDC, JWT, or external identity mapping.
+`drf-unified-rbac` is a reusable Django app that provides role-based authorization for Django REST Framework. It supports local Django users and Keycloak access tokens while keeping role-to-permission grants in the same local RBAC tables.
 
 ## Architecture
 
 ```text
-Django User
-    ↓ adapted by Principal.from_user()
+Local Django User ──────────────┐
+                               ↓ adapted by Principal.from_user()
+Keycloak token → SSOUser ──────┘
 Principal
     ↓ role lookup
-LocalRoleProvider
-    ↓ UserRole → enabled Role
+LocalRoleProvider or SSORoleProvider
+    ↓ UserRole or verified Keycloak Client Roles
 Role codes
     ↓ permission lookup
 PermissionRepository
@@ -27,6 +28,7 @@ DRF ViewSet
 Responsibilities are intentionally separated:
 
 - `LocalRoleProvider` resolves `Principal → enabled role codes` only.
+- `SSORoleProvider` returns the client role codes already verified and normalized from the Keycloak token.
 - `PermissionRepository` resolves `role codes → enabled permission codes` only.
 - `AuthorizationService` coordinates both dependencies and exposes the public authorization API.
 - `RBACPermission` adapts a DRF request and ViewSet action to that service.
@@ -64,9 +66,33 @@ DRF_RBAC = {
 }
 ```
 
-`AUTH_MODE` defaults to `"local"`. V0.1 rejects `"oidc"` and every other unsupported value with `django.core.exceptions.ImproperlyConfigured`; there is no silent fallback.
+`AUTH_MODE` defaults to `"local"`. The package rejects `"oidc"` and every other unsupported value with `django.core.exceptions.ImproperlyConfigured`; there is no silent fallback.
 
 The `UserRole.user` relation uses `settings.AUTH_USER_MODEL`, so the component works with Django's default user and normal custom user models.
+
+### Keycloak SSO mode
+
+Install the normal package dependencies, then configure DRF to authenticate bearer tokens and select the SSO role provider:
+
+```python
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "drf_unified_rbac.authentication.KeycloakAuthentication",
+    ],
+}
+
+DRF_RBAC = {
+    "AUTH_MODE": "sso",
+    "KEYCLOAK_ISSUER": "https://sso.example.com/realms/myrealm",
+    "KEYCLOAK_CLIENT_ID": "my-app",
+    # Optional; defaults to KEYCLOAK_CLIENT_ID.
+    "KEYCLOAK_AUDIENCE": "my-api",
+}
+```
+
+The authenticator accepts `Authorization: Bearer <access_token>`, obtains the realm JWKS from `{KEYCLOAK_ISSUER}/protocol/openid-connect/certs`, and verifies the RS256 signature plus `exp`, `iss`, and `aud`. It reads roles only from `resource_access[KEYCLOAK_CLIENT_ID].roles`. No client secret is needed for access-token verification, and no Django user is created.
+
+On the Keycloak side, create client roles whose names exactly match local `Role.code` values and assign them to users. The access token must include those roles under the configured client in `resource_access`, and its `aud` claim must contain `KEYCLOAK_AUDIENCE` (or `KEYCLOAK_CLIENT_ID` when the audience setting is omitted). Add/configure the corresponding client-role and audience token mappers when the client scope does not already emit those claims.
 
 ## Migration
 
@@ -143,7 +169,7 @@ POST /api/orders/          demo.order.create
 POST /api/orders/approve/  demo.order.approve
 ```
 
-Authentication remains Django/DRF's responsibility. The example enables `SessionAuthentication` and `BasicAuthentication`; tests use `force_authenticate()`.
+The example defaults to local `SessionAuthentication` and `BasicAuthentication`. Set `DRF_RBAC_AUTH_MODE=sso`, `KEYCLOAK_ISSUER`, `KEYCLOAK_CLIENT_ID`, and optionally `KEYCLOAK_AUDIENCE` in the environment to run it in SSO mode.
 
 ## Direct service usage
 
@@ -180,6 +206,6 @@ python example_project/manage.py makemigrations --check
 
 The test suite covers model constraints, enabled-state filtering, provider and repository behavior, service decisions, factory errors and instance reuse, and DRF default-deny integration.
 
-## V0.1 scope
+## Current scope
 
-V0.1 contains local authorization only. OIDC/Keycloak, JWT/JWKS, external identities, group mapping, object permissions, data scopes, ABAC, Redis, management APIs, frontend code, multi-tenancy, and audit systems are intentionally outside this release.
+SSO support is intentionally limited to verification of Keycloak bearer access tokens and extraction of one client's roles. Group mapping, realm roles, composite-role expansion, UserInfo/Admin API calls, user synchronization, login redirects/callbacks, token refresh, object permissions, data scopes, ABAC, Redis, management APIs, frontend code, multi-tenancy, and audit systems are outside this release.

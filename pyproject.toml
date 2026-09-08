@@ -11,6 +11,7 @@ requires-python = ">=3.10"
 dependencies = [
     "Django>=5.2,<6.0",
     "djangorestframework>=3.17,<4.0",
+    "PyJWT[crypto]>=2.8,<3.0",
 ]
 
 [project.optional-dependencies]
@@ -25,4 +26,3 @@ include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["src"]
-

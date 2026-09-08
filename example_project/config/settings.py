@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 
@@ -62,35 +63,23 @@ USE_TZ = True
 STATIC_URL = "static/"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-# REST_FRAMEWORK = {
-#     "DEFAULT_AUTHENTICATION_CLASSES": [
-#         "rest_framework.authentication.SessionAuthentication",
-#         "rest_framework.authentication.BasicAuthentication",
-#     ]
-# }
-
-# DRF_RBAC = {
-#     "AUTH_MODE": "local",
-# }
-
-
+RBAC_AUTH_MODE = os.environ.get("DRF_RBAC_AUTH_MODE", "local")
 
 REST_FRAMEWORK = {
-    "DEFAULT_AUTHENTICATION_CLASSES": [
-        "drf_unified_rbac.authentication.KeycloakAuthentication",
-    ]
+    "DEFAULT_AUTHENTICATION_CLASSES": (
+        ["drf_unified_rbac.authentication.KeycloakAuthentication"]
+        if RBAC_AUTH_MODE == "sso"
+        else [
+            "rest_framework.authentication.SessionAuthentication",
+            "rest_framework.authentication.BasicAuthentication",
+        ]
+    )
 }
-
 
 DRF_RBAC = {
-    "AUTH_MODE": "sso",
-
-    "KEYCLOAK_ISSUER": "...",
-    "KEYCLOAK_CLIENT_ID": "cmdb-app",
-}
-
-DEFAULTS = {
-    "AUTH_MODE": "local",
-    "KEYCLOAK_ISSUER": None,
-    "KEYCLOAK_CLIENT_ID": None,
+    "AUTH_MODE": RBAC_AUTH_MODE,
+    "KEYCLOAK_ISSUER": os.environ.get("KEYCLOAK_ISSUER"),
+    "KEYCLOAK_CLIENT_ID": os.environ.get("KEYCLOAK_CLIENT_ID"),
+    # Optional: defaults to KEYCLOAK_CLIENT_ID when omitted.
+    "KEYCLOAK_AUDIENCE": os.environ.get("KEYCLOAK_AUDIENCE"),
 }

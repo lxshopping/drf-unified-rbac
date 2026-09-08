@@ -9,14 +9,16 @@ class Principal:
     subject: str
     username: str
     auth_source: str
+    claims: Mapping[str, Any] | None = None
 
     @classmethod
-    def from_user(cls, user: Any) -> "Principal":
+    def from_local_user(cls, user: Any) -> "Principal":
         """Adapt an authenticated Django user to a local principal."""
         return cls(
             subject=str(user.pk),
             username=str(user.get_username()),
             auth_source="local",
+            claims=None,
         )
 
     @classmethod
@@ -25,4 +27,5 @@ class Principal:
             subject=str(claims["sub"]),
             username=str(claims["preferred_username"]),
             auth_source="sso",
+            claims=claims,
         )
