@@ -16,14 +16,7 @@ class RBACPermission(BasePermission):
         if user is None or not getattr(user, "is_authenticated", False):
             return None
         try:
-            if getattr(user, "auth_source", None) == "sso":
-                claims = getattr(request, "auth", None)
-                if not isinstance(claims, Mapping):
-                    return None
-                return Principal.from_sso_claims(claims)
-            if getattr(user, "pk", None) is None:
-                return None
-            return Principal.from_local_user(user)
+            return Principal.from_user(user)
         except (AttributeError, TypeError, ValueError):
             return None
 

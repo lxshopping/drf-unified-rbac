@@ -164,12 +164,55 @@ UserRole.objects.get_or_create(user=user, role=role)
 Available endpoints are:
 
 ```text
+GET  /api/rbac/me          authenticated identity, roles and permissions
 GET  /api/orders/          demo.order.view
 POST /api/orders/          demo.order.create
 POST /api/orders/approve/  demo.order.approve
 ```
 
 The example defaults to local `SessionAuthentication` and `BasicAuthentication`. Set `DRF_RBAC_AUTH_MODE=sso`, `KEYCLOAK_ISSUER`, `KEYCLOAK_CLIENT_ID`, and optionally `KEYCLOAK_AUDIENCE` in the environment to run it in SSO mode.
+
+### Current user's RBAC information
+
+`GET /api/rbac/me` requires authentication only (`IsAuthenticated`), with no
+business permission check. It adapts the authenticated user through `Principal`
+and calls `AuthorizationService.get_roles()` / `get_permissions()`, reusing the
+configured role provider and `PermissionRepository`. SSO identities need no local
+user or primary key. Role and permission arrays are deduplicated and sorted.
+
+```json
+{
+  "username": "alice",
+  "auth_source": "local",
+  "roles": ["admin"],
+  "permissions": ["demo.order.create", "demo.order.view"]
+}
+```
+
+Authenticated users without roles receive HTTP 200 with both arrays empty.
+Roles without effective grants yield an empty permissions array. Role codes
+retain the provider's existing semantics: local roles are enabled assigned
+roles; SSO roles come from the configured client's verified token claims.
+Permissions always honor the repository's enabled role/permission filters.
+Invalid or expired SSO bearer tokens retain the authenticator's HTTP 401 response.
+
+Local mode (use an existing user's username; curl prompts for the password):
+
+```bash
+curl -i -u alice http://127.0.0.1:8000/api/rbac/me
+```
+
+SSO mode (use access tokens for users with `admin`, `viewer`, or no client role;
+role names must match the existing local `Role.code` grants):
+
+```bash
+curl -i -H "Authorization: Bearer <access_token>" http://127.0.0.1:8000/api/rbac/me
+curl -i -H "Authorization: Bearer invalid-token" http://127.0.0.1:8000/api/rbac/me
+```
+
+On Windows PowerShell, use `curl.exe` for these commands. The example seed uses
+`demo_admin` / `demo_viewer`, so tokens using those seed grants must use the same
+codes. The endpoint introduces no new role mappings or seed data.
 
 ## Direct service usage
 
