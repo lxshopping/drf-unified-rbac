@@ -63,7 +63,15 @@ USE_TZ = True
 STATIC_URL = "static/"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-RBAC_AUTH_MODE = os.environ.get("DRF_RBAC_AUTH_MODE", "local")
+# RBAC_AUTH_MODE = os.environ.get("DRF_RBAC_AUTH_MODE", "local")
+RBAC_AUTH_MODE = os.environ.get(
+    "DRF_RBAC_AUTH_MODE",
+    "local",
+).strip().lower()
+
+KEYCLOAK_CLIENT_ID = os.environ.get(
+    "DRF_RBAC_KEYCLOAK_CLIENT_ID"
+)
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
@@ -76,10 +84,26 @@ REST_FRAMEWORK = {
     )
 }
 
+# DRF_RBAC = {
+#     "AUTH_MODE": RBAC_AUTH_MODE,
+#     "KEYCLOAK_ISSUER": os.environ.get("KEYCLOAK_ISSUER"),
+#     "KEYCLOAK_CLIENT_ID": os.environ.get("KEYCLOAK_CLIENT_ID"),
+#     # Optional: defaults to KEYCLOAK_CLIENT_ID when omitted.
+#     "KEYCLOAK_AUDIENCE": os.environ.get("KEYCLOAK_AUDIENCE"),
+# }
+
 DRF_RBAC = {
     "AUTH_MODE": RBAC_AUTH_MODE,
-    "KEYCLOAK_ISSUER": os.environ.get("KEYCLOAK_ISSUER"),
-    "KEYCLOAK_CLIENT_ID": os.environ.get("KEYCLOAK_CLIENT_ID"),
-    # Optional: defaults to KEYCLOAK_CLIENT_ID when omitted.
-    "KEYCLOAK_AUDIENCE": os.environ.get("KEYCLOAK_AUDIENCE"),
+
+    "KEYCLOAK_ISSUER": os.environ.get(
+        "DRF_RBAC_KEYCLOAK_ISSUER"
+    ),
+
+    "KEYCLOAK_CLIENT_ID": KEYCLOAK_CLIENT_ID,
+
+    # 不配置时默认使用 CLIENT_ID
+    "KEYCLOAK_AUDIENCE": os.environ.get(
+        "DRF_RBAC_KEYCLOAK_AUDIENCE",
+        KEYCLOAK_CLIENT_ID,
+    ),
 }

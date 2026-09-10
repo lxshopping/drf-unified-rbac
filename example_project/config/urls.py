@@ -10,6 +10,6 @@ router.register("orders", DemoOrderViewSet, basename="order")
 
 urlpatterns = [
     path("admin/", admin.site.urls),
+    path("api/rbac/", include("drf_unified_rbac.urls")),
     path("api/", include(router.urls)),
 ]
-
