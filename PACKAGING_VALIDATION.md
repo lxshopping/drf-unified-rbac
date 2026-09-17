@@ -1,225 +1,264 @@
-# 0.1.0 Packaging 验证记录
+# 0.2.0 implementation and packaging validation
 
-验证日期：2026-09-14。任务为 Django reusable app / Python distribution 整理。
-`src/drf_unified_rbac/` 和 `example_project/` 的代码内容均未修改。
-开始工作前已有 54 个文件的 Git executable-bit 差异（100755 → 100644），本次保留这些既有差异。
+Validation date: 2026-09-17. This record describes the reusable RBAC package;
+no consuming business project or frontend repository was modified.
 
-## 修改文件与原因
+## Result
 
-| 文件 | 修改原因 |
+- Version is 0.2.0 in both pyproject.toml and drf_unified_rbac.__version__.
+- APIView and existing ViewSet declarations share default-deny RBACPermission.
+- Local, SSO and Hybrid modes are implemented. Hybrid selects exactly one
+  source-checked provider per principal; usernames/subjects never merge identities.
+- Both providers return enabled database roles. In SSO, token roles absent from
+  the RBAC database or disabled there are excluded from me.roles.
+- Reusable, RBAC-protected administration APIs include pagination/search,
+  soft-disable, and transactional complete relationship replacement.
+- Bootstrap is idempotent and restores disabled/missing built-in grants. An
+  already-complete bootstrap does not rewrite role/permission timestamps.
+- No schema changes or new migrations. Keycloak token verification code is unchanged.
+- Development full suite: **156 passed in 4.96s**.
+- Installed-wheel full suite: **156 passed in 4.82s**, no collection errors.
+- Django check, migration consistency, fresh database migration, and pip check pass.
+- Both requested 0.2.0 distributions built successfully.
+
+## Files and reasons
+
+All source paths below are relative to src/drf_unified_rbac/ unless prefixed
+with tests/ or example_project/.
+
+| File | Reason |
 | --- | --- |
-| `pyproject.toml` | 保留名称、0.1.0、Python 与运行时依赖范围；补充 wheel 构建依赖、build 开发依赖；仅发现 drf_unified_rbac 及子包；禁用隐式 namespace 和非代码数据自动收集。 |
-| `MANIFEST.in` | 源码包收录完整 tests、pytest.ini 和 example_project 的 Python 文件，以便独立运行集成测试；排除字节码、数据库、备份和临时文件。 |
-| `pytest.ini` | 删除 pythonpath 中的 src，测试必须使用已安装的 app。保留 Consumer 与测试配置的路径。 |
-| `.gitignore` | 忽略 .venv-* 验证环境。 |
-| `README.md` | 补充 build、wheel 安装、Consumer 设置、URL、迁移和干净环境验证；修正 demo 环境变量名称；明确 Hybrid 后续实现。 |
-| `tests/test_principal_and_provider.py` | 两个旧测试改为当前 SSOUser → Principal.from_user 路径，保留角色提取、去重和缺省角色断言。 |
-| `tests/conftest.py`、`tests/test_keycloak_authentication.py`、`tests/test_me.py` | 用 timezone.utc 替代 Python 3.11 才提供的 datetime.UTC，使测试代码与声明的 Python >=3.10 对齐。 |
-| `PACKAGING_VALIDATION.md` | 保存本次实际执行结果及限制。 |
+| domain/principal.py | Validate authentication, supported source and SSO role shapes; retain unified from_user; remove obsolete commented SSO constructor. |
+| permissions/drf.py | Accept APIView required_permission first, otherwise existing ViewSet action mapping; invalid declarations deny. |
+| providers/hybrid.py (new) | Route each principal to its unique local/SSO provider. |
+| providers/local.py | Retain independent source isolation and return no roles for malformed local primary keys. |
+| providers/sso.py | Independently enforce SSO source and intersect token codes with enabled database roles. |
+| providers/__init__.py | Export HybridRoleProvider. |
+| factories/provider.py | Select HybridRoleProvider for hybrid; retain invalid-mode ImproperlyConfigured. |
+| services/authorization.py | Keep service API/cache, validate permission codes and add clear_rbac_caches for both factories. |
+| services/__init__.py | Export cache reset helper alongside the existing service exports. |
+| views.py | Keep me contract and return 403 for invalid authenticated identity adaptation. |
+| urls.py | Mount admin/ while preserving the original me path and URL name. |
+| admin_api/__init__.py (new) | Package for reusable administration APIs. |
+| admin_api/constants.py (new) | Single definition of the nine built-in management permissions. |
+| admin_api/serializers.py (new) | Model representations, minimal host-user representation, and duplicate/unknown-code validation. |
+| admin_api/views.py (new) | RBAC action mapping, bounded pagination/search, role soft-disable, atomic replacement with parent locks, minimal user-field queries. |
+| admin_api/urls.py (new) | Register roles, permissions and local users with DRF routing. |
+| management/__init__.py and management/commands/__init__.py (new) | Make management commands discoverable and included in the wheel. |
+| management/commands/rbac_bootstrap_admin.py (new) | Transactional creation/recovery of rbac_admin and grants; optional existing-host-user binding. |
+| __init__.py | Runtime version 0.2.0. |
+| pyproject.toml | Distribution version 0.2.0; existing runtime ranges and SSO extra retained. |
+| example_project/config/settings.py | Add hybrid authenticator selection and simplify environment settings. |
+| example_project/config/urls.py | Register the APIView demonstration. |
+| example_project/demo/views.py | Add a permission-protected APIView alongside the original ViewSet. |
+| tests/conftest.py | joserfc signed-token and JWKS fixtures; shared cache reset. |
+| tests/settings.py | Session middleware/app for real local-session Hybrid integration tests. |
+| tests/test_factories.py | Cover invalid AUTH_MODE values, including wrong types. |
+| tests/test_keycloak_authentication.py | Replace obsolete PyJWT mocks; exercise actual RS256 verification, required claims, JWKS caching, key refresh and failures. |
+| tests/test_me.py | Adapt JWKS fixtures; expect only enabled known SSO roles. |
+| tests/test_principal_and_provider.py | Supply database roles for the effective-role SSO provider contract. |
+| tests/test_sso_integration.py | Use current JWKS interface while retaining ViewSet integration coverage. |
+| tests/test_hybrid.py (new) | APIView declaration precedence/default deny, mode matrix, equal-name/equal-subject isolation, provider guards, live grants, cache reset and real session/signed-SSO me. |
+| tests/test_admin_api.py (new) | Every endpoint's permission, CRUD, soft-disable, duplicate/unknown validation, replacement rollback, pagination/search, and SSO administration. |
+| tests/test_bootstrap.py (new) | Idempotence including timestamps, disabled/missing grant recovery, existing users only, rollback and preservation of custom data. |
+| tests/test_custom_user.py (new) | Launch an isolated Django consumer with a swapped user model. |
+| tests/custom_user_check.py (new) | Exercise UUID IDs, non-username login, search, me, assignment, invalid IDs and bootstrap. |
+| tests/custom_user_app/__init__.py and models.py (new) | Isolated custom-user test app with UUID pk and USERNAME_FIELD=login. |
+| README.md | Installation, three modes, view declarations, administration contract, bootstrap, host-auth boundary/Bearer routing, frontend contract and upgrade notes. |
+| PACKAGING_VALIDATION.md | This implementation and release validation record. |
 
-## 最终结构
+No text changes were needed in models, migrations, conf.py, apps.py, admin.py,
+PermissionRepository or authentication/keycloak.py. Original ViewSet, model,
+repository and authorization tests remain part of the full passing suite.
+At task start, 57 tracked files already had executable-bit differences; these
+were preserved. Files listed by git status solely for those mode differences
+are not new content changes from this implementation.
 
-```text
-drf-unified-rbac/
-├── pyproject.toml
-├── MANIFEST.in
-├── README.md
-├── PACKAGING_VALIDATION.md
-├── pytest.ini
-├── .gitignore
-├── src/drf_unified_rbac/
-│   ├── __init__.py
-│   ├── apps.py
-│   ├── admin.py
-│   ├── conf.py
-│   ├── urls.py
-│   ├── views.py
-│   ├── authentication/
-│   ├── domain/
-│   ├── factories/
-│   ├── models/
-│   ├── permissions/
-│   ├── providers/
-│   ├── repositories/
-│   ├── services/
-│   └── migrations/             # __init__.py、0001_initial.py
-├── tests/
-├── example_project/
-│   ├── manage.py
-│   ├── config/
-│   └── demo/
-└── dist/                       # 构建产物，Git 忽略
-    ├── drf_unified_rbac-0.1.0-py3-none-any.whl
-    └── drf_unified_rbac-0.1.0.tar.gz
-```
+## Public behavior and compatibility
 
-临时验证环境为 `.venv-package-test/`，临时 Consumer、测试副本及核验脚本位于
-`build/package-validation/`，两者均被 Git 忽略。副本只复制现有 Python 文件与 pytest.ini，
-没有 src、数据库或虚拟环境；原 example_project/db.sqlite3 的 SHA-256 在验证前后相同。
+| Mode | Local principal | SSO principal | Unknown source |
+| --- | --- | --- | --- |
+| local | UserRole -> enabled Role | No grants | No grants |
+| sso | No grants | Token client codes -> enabled Role | No grants |
+| hybrid | Local provider only | SSO provider only | No grants |
 
-## pyproject.toml 与依赖
+AuthorizationService retains get_roles(principal), get_permissions(principal)
+and has_permission(principal, permission_code). Cached construction remains;
+HybridRoleProvider routes at each call. No user roles/permissions are cached.
+clear_rbac_caches() clears provider and service caches after settings changes.
 
-- Backend：`setuptools.build_meta`；隔离构建依赖 `setuptools>=68`、`wheel`。
-- Distribution：`drf-unified-rbac`；import/app name：`drf_unified_rbac`；版本：`0.1.0`。
-- Python：`>=3.10`，与原声明一致。
-- `package-dir = {"" = "src"}`；从 src 发现 `drf_unified_rbac`、`drf_unified_rbac.*`；`namespaces = false`。
-- `include-package-data = false`：当前 app 全部由 Python 模块组成；migrations 是带 __init__.py 的正常 Python 子包，无需额外 package-data glob。
-- Runtime：`Django>=5.2,<6.0`、`djangorestframework>=3.17,<4.0`、`PyJWT[crypto]>=2.8,<3.0`，均沿用原范围。
-- Django 支撑模型、迁移与 settings；DRF 支撑认证、权限及 API；PyJWT 的 crypto extra 提供 RS256 所需 cryptography。JWKS 使用 PyJWT 的客户端，未增加 HTTP 客户端依赖。
-- Dev extra：`build>=1.0`、`pytest>=8.0`、`pytest-django>=4.8`。普通 wheel 安装不安装这些工具。
-- 未增加 setup.py，未更改模型发现方式、AppConfig、migration、配置协议和公共 import。
+RBACPermission first accepts a non-blank string required_permission. Otherwise
+it resolves required_permissions[view.action]. Invalid/missing declarations,
+identity or grants deny. No staff/superuser bypass was introduced.
 
-版本兼容性核对参考：[DRF 3.17 官方发布元数据](https://pypi.org/project/djangorestframework/3.17.0/)、
-[setuptools 包发现](https://setuptools.pypa.io/en/latest/userguide/package_discovery.html)、
-[setuptools 数据文件](https://setuptools.pypa.io/en/latest/userguide/datafiles.html)。
+GET /api/rbac/me retains its no-trailing-slash path, URL name and fields:
+username, auth_source, sorted unique roles, sorted unique permissions. It uses
+IsAuthenticated without a business grant requirement. Valid users without grants
+receive 200 with empty arrays. Invalid principal adaptation receives 403.
 
-## 构建与归档
+**Intentional compatibility change:** SSO get_roles()/me.roles now report only
+enabled RBAC database roles. Raw token roles that are unknown or disabled no
+longer appear. RolePermission/Permission enabled filtering remains in effect.
+Local/sso mode configuration, ViewSet declarations, service APIs and valid user
+adaptation remain compatible. More restrictive invalid-user handling is deliberate.
 
-通用命令：
+No database migration was added; the field is enabled, not is_active. User data
+comes from get_user_model(), with only pk/get_username()/optional is_active
+serialized. Local account creation/password management and Keycloak Admin API
+operations remain outside the package.
+
+## Administration contract
+
+Paths are relative to /api/rbac/admin/:
+
+| Path | Methods | Permission |
+| --- | --- | --- |
+| roles/ | GET, POST | rbac.role.view/create |
+| roles/<id>/ | GET, PATCH, DELETE | rbac.role.view/update/delete |
+| permissions/ | GET, POST | rbac.permission.view/create |
+| permissions/<id>/ | GET, PATCH | rbac.permission.view/update |
+| roles/<id>/permissions/ | GET, PUT | rbac.role.view/update |
+| users/ | GET | rbac.user_role.view |
+| users/<id>/roles/ | GET, PUT | rbac.user_role.view/update |
+
+Role DELETE sets enabled=False and preserves relations. Lists are paginated
+(default 50, client maximum 200) and searchable (?search=). Roles/permissions
+search code/name; users search USERNAME_FIELD. The list response is the DRF
+count/next/previous/results shape.
+
+Relationship PUT takes permission_codes or role_codes arrays, validates all codes,
+rejects duplicates, and replaces the complete set in transaction.atomic(). Parent
+row locking serializes replacements on databases supporting SELECT FOR UPDATE;
+SQLite's locking differs. Empty arrays clear assignments. Admin relationship GET
+shows stored assignments, while me shows effective enabled roles/permissions.
+
+Bootstrap usage:
 
 ```bash
-python -m pip install build
-python -m build
-python -m zipfile -l dist/drf_unified_rbac-0.1.0-py3-none-any.whl
+python manage.py rbac_bootstrap_admin
+python manage.py rbac_bootstrap_admin --username admin
 ```
 
-此机器的 python 不在 PATH，实际使用 `.venv-win/Scripts/python.exe` 执行。
-最终构建使用 setuptools 84.0.0、wheel 0.48.0，先构建 sdist，再从 sdist 构建 wheel：
+Every run ensures nine built-in permissions and rbac_admin are present/enabled
+and all built-in relations exist. The optional username is resolved using the
+host's USERNAME_FIELD; it binds an existing local user only. For SSO, assign
+Keycloak client role rbac_admin in the configured client; no local user is needed.
+
+## Test environments and commands
+
+Host: Windows, Python 3.12.14. Runtime versions resolved for validation:
+Django 5.2.17, DRF 3.18.1, joserfc 1.7.5, cryptography 50.0.1.
+Test tooling: pytest 9.1.1 and pytest-django 4.14.0.
+Build isolation: setuptools 84.0.0 and wheel 0.48.0.
+
+A new .venv-rbac-020-dev environment installed .[dev,sso]. Tests use the installed
+editable app and include full SSO dependencies. Final run:
 
 ```text
-Successfully built drf_unified_rbac-0.1.0.tar.gz and drf_unified_rbac-0.1.0-py3-none-any.whl
+156 passed in 4.96s
 ```
 
-首次构建检查发现旧 egg-info 的 SOURCES.txt.bak 被收录；补充 MANIFEST 排除规则后重新构建。
-最终 wheel 含 29 个 Python 模块和 4 个 dist-info 文件；源码包含 63 个文件。
-所有 app Python 文件逐字节匹配工作区；源码包中的 app、tests、example_project、README 和构建配置亦逐字节匹配。
+The initial repository environment failed collection because joserfc was absent;
+old SSO tests also mocked the retired get_jwk_client/PyJWT interface. Those issues
+were resolved with the complete dependency environment and updated signed-token
+fixtures; the initial 28 passing non-SSO tests are not the completion criterion.
 
-wheel 包含 authentication、domain、factories、models、permissions、providers、repositories、services，
-以及 migrations/__init__.py 和 migrations/0001_initial.py。所有 Python 包都具备 __init__.py。
-wheel 不含 example_project、tests、db.sqlite3、.venv、.git、__pycache__、.pytest_cache、IDE 或临时文件。
-sdist 包含供开发者运行的 Consumer 和测试，但它们不会被安装为 Python package。
+```text
+python example_project/manage.py check
+System check identified no issues (0 silenced).
 
-- `drf_unified_rbac-0.1.0-py3-none-any.whl`：20178 bytes；SHA-256 `59aa6bc447c4b27aa9eb810bce81893a037c78289f11b3d2f8c5ff8011804a1d`。
-- `drf_unified_rbac-0.1.0.tar.gz`：27758 bytes；SHA-256 `d035a8c360e91c62618b2b286b76ef4ad0b0b660887b9f3e5c1bf9881716a014`。
+python example_project/manage.py makemigrations --check --dry-run
+No changes detected
+```
 
-## 干净环境安装与 Django 验证
-
-实际新建 `.venv-package-test`，`include-system-site-packages = false`，然后仅安装最终 wheel：
+First network-backed build produced sdist but failed fetching setuptools for
+the second isolated environment. After downloading dependencies into the ignored
+build/wheelhouse directory, the standard build was rerun with isolated dependency
+installation sourced locally:
 
 ```powershell
-& ./.venv-win/Scripts/python.exe -m venv .venv-package-test
-& ./.venv-package-test/Scripts/python.exe -m pip install ./dist/drf_unified_rbac-0.1.0-py3-none-any.whl
-& ./.venv-package-test/Scripts/python.exe -m pip show drf-unified-rbac
-& ./.venv-package-test/Scripts/python.exe -m pip check
+$env:PIP_DISABLE_PIP_VERSION_CHECK='1'
+$env:PIP_NO_INDEX='1'
+$env:PIP_FIND_LINKS='E:\code\drf-unified-rbac\build\wheelhouse'
+& .\.venv-rbac-020-dev\Scripts\python.exe -m build
 ```
 
-安装时自动解析的实际版本：Python 3.12.14、Django 5.2.17、DRF 3.18.1、PyJWT 2.14.0、cryptography 50.0.1。
-在加入测试工具之前，已确认 pytest 和 build 不存在，并完成两种 Consumer 模式的集成检查。
-`direct_url.json` 指向最终 wheel，其归档 SHA-256 与本次产物一致，无 editable 安装。
+```text
+Successfully built drf_unified_rbac-0.2.0.tar.gz and drf_unified_rbac-0.2.0-py3-none-any.whl
+```
+
+This retained build isolation and built the wheel from the sdist. No package-index
+configuration or dependency constraints in the repository were changed.
+
+## Clean wheel installation
+
+Created a separate .venv-rbac-020-wheel with system site packages disabled.
+First installed only the base wheel and dependencies. A standalone consumer
+confirmed local functionality without joserfc installed. Then installed the same
+wheel's [sso] extra and test tools from the downloaded dependency directory.
+No editable app install or src PYTHONPATH was used in this environment.
 
 ```text
-Name: drf-unified-rbac
-Version: 0.1.0
-Location: E:\code\drf-unified-rbac\.venv-package-test\Lib\site-packages
-Import: E:\code\drf-unified-rbac\.venv-package-test\Lib\site-packages\drf_unified_rbac\__init__.py
+Import: E:\code\drf-unified-rbac\.venv-rbac-020-wheel\Lib\site-packages\drf_unified_rbac\__init__.py
+Runtime version = installed metadata version = 0.2.0
 No broken requirements found.
 ```
 
-| 验证 | 实际结果 |
+Consumer checks ran from build/package-validation-020 against a fresh copy of
+example_project, using a fresh in-memory database for each mode. The existing
+example database was not migrated or seeded by these checks.
+
+| Check | Result |
 | --- | --- |
-| 独立模式 `python -I` import | 从 clean venv 的 site-packages 导入；版本和 wheel 元数据一致。 |
-| 全部子模块导入 | 28 个子模块导入成功（加根模块共 29）。 |
-| 公共 API | authentication.KeycloakAuthentication 和 permissions.RBACPermission 均能导入，且与原内部路径指向同一类。 |
-| Django app 自动发现 | INSTALLED_APPS 中仅指定 drf_unified_rbac 即选中 DrfUnifiedRbacConfig，发现四个模型。 |
-| 原 example_project/manage.py check | System check identified no issues (0 silenced)。 |
-| 独立副本 manage.py check | Local 和 SSO 均无问题。 |
-| 独立副本 migrate --noinput | 空库执行全部迁移成功，drf_unified_rbac.0001_initial... OK。 |
-| showmigrations drf_unified_rbac | [X] 0001_initial。 |
-| makemigrations --check --dry-run | No changes detected。 |
-| 数据库表 | drf_unified_rbac_permission、drf_unified_rbac_role、drf_unified_rbac_rolepermission、drf_unified_rbac_userrole 均存在。 |
-| Local 接口 | Basic 认证 GET /api/rbac/me 返回 200；viewer 可 list，approve 返回 403；移除角色后权限为空；匿名 me 保持 403。 |
-| SSO 接口 | Consumer 环境变量选中字符串配置的 KeycloakAuthentication；签名令牌的 me/list 返回 200；viewer approve 为 403，admin approve 为 200；无角色为空；错误 audience 和缺失令牌为 401；不创建本地用户。 |
-| 默认 URL | reverse 返回 /api/rbac/me；库内仅保留 me，无硬编码宿主前缀。 |
+| Base installation without SSO dependency | Passed local consumer checks. |
+| Isolated `python -I` import | site-packages and metadata/runtime version 0.2.0. |
+| Fresh migrate and Django checks | Passed in local, sso and hybrid. |
+| URL include/reverse | Original /api/rbac/me resolves; new admin URLs resolve. |
+| APIView and ViewSet | Authorized GET succeeds; ungranted create denied. |
+| Local session and SSO signed-token me | Effective, sorted roles/permissions; no cross-source merge. |
+| RBAC administration | Paginated roles and authorized creation succeed. |
+| Bootstrap | Repeated command succeeds and grants remain complete. |
+| Invalid SSO token | Authentication failure; no fallback. |
+| SSO identity | No local user automatically created. |
+| Installed-wheel full test suite | 156 passed in 4.82s, zero collection errors. |
+| pip check | No broken requirements found. |
 
-接口检查使用真实 Consumer URLConf、DRF 请求处理和 RSA 签名测试令牌。
-JWKS 查询使用本地 stub，未连接真实 Keycloak 服务。日志中的 Forbidden/Unauthorized 是断言预期的拒绝结果。
-本次实际测试 Python 3.12.14，未执行完整 Python/Django 版本矩阵。
+The tests and example copied for installed-wheel verification contain no src
+package. The copied test suite also runs the custom-user consumer subprocess
+using the wheel-installed app.
 
-## 自动化测试及既有失败
+Archive checks compared every Python app module byte-for-byte with the workspace.
+The wheel contains 38 Python modules plus distribution metadata, including the
+new admin_api and management packages and existing migrations. It contains no
+tests, example, database or temporary files. The sdist includes matching app,
+example, tests, README and build/test configuration. git diff --check passes.
 
-改造前命令：`.venv-win/Scripts/python.exe -m pytest -q`。
-结果：`2 failed, 69 passed`，错误为：
+## Artifacts
 
-```text
-AttributeError: type object 'Principal' has no attribute 'from_sso_claims'
-```
+- `drf_unified_rbac-0.2.0-py3-none-any.whl`: 29013 bytes; SHA-256 `f2440938c4d09ad97f68e16befc1238d99e668174bcc87b332641ef599fa08d4`.
+- `drf_unified_rbac-0.2.0.tar.gz`: 43431 bytes; SHA-256 `dfc5a080b15795b99f06f8bf8599c72609666248359e5d4c68e5373fbb2698bf`.
 
-失败测试为 test_principal_from_sso_claims_extracts_configured_client_roles 和
- test_missing_client_roles_returns_empty_collection。
-原因是源码中的 from_sso_claims 已被注释，旧测试未更新；与本次 packaging 无关。
-修复仅更新测试输入路径为 SSOUser → Principal.from_user，没有恢复、重写或修改 Principal。
-修复后开发环境：`71 passed in 1.03s`。
+The validation record is repository documentation, outside the wheel and sdist;
+artifact hashes above refer to the exact archives installed and checked.
 
-安装最终 wheel 后单独安装 pytest 9.1.1 / pytest-django 4.14.0，清除 PYTHONPATH 和
-DJANGO_SETTINGS_MODULE，在 `build/package-validation`（没有 src 目录）执行：
+## Consumer upgrade steps
 
-```powershell
-& E:/code/drf-unified-rbac/.venv-package-test/Scripts/python.exe -m pytest -q
-```
+1. Upgrade the wheel to 0.2.0, using [sso] where Keycloak authentication is needed.
+2. Keep the host's local login and password/session/JWT implementation.
+3. For dual identity support, set AUTH_MODE=hybrid and configure the host's
+   authentication classes alongside KeycloakAuthentication. If both consume
+   Bearer, the host must define explicit routing; this package adds no fallback.
+4. Keep the existing URL include and ViewSet mappings; APIViews can now declare
+   required_permission. me response fields remain unchanged.
+5. Run normal migrate (no new schema changes), bootstrap management permissions,
+   and bind the intended existing local administrator or Keycloak client role.
+6. Ensure expected SSO role codes have enabled database Role entries.
+7. Both login flows call GET /api/rbac/me; frontend authorization consumes
+   me.permissions. No frontend repository change is part of this task.
 
-最终结果：`71 passed in 1.11s`；`pip check` 无依赖问题。
-测试副本与仓库测试逐字节相同；验证使用的是安装后的 wheel。
-`git diff --check` 通过。pip 安装测试工具时有查询 pip 最新版本失败的提示，安装本身退出码为 0，不影响测试。
+## Verification limits
 
-## Consumer 最小接入
-
-安装 wheel，并在普通 Django 项目的 settings.py 中增加：
-
-```python
-INSTALLED_APPS += ["rest_framework", "drf_unified_rbac"]
-DRF_RBAC = {"AUTH_MODE": "local"}
-REST_FRAMEWORK = {
-    "DEFAULT_AUTHENTICATION_CLASSES": [
-        "rest_framework.authentication.SessionAuthentication",
-        "rest_framework.authentication.BasicAuthentication",
-    ],
-}
-```
-
-项目 urls.py：
-
-```python
-from django.urls import include, path
-
-urlpatterns = [path("api/rbac/", include("drf_unified_rbac.urls"))]
-```
-
-执行 `python manage.py migrate`，在现有业务 ViewSet 中使用：
-
-```python
-from rest_framework.viewsets import ModelViewSet
-from drf_unified_rbac.permissions import RBACPermission
-
-class OrderViewSet(ModelViewSet):
-    # 使用业务项目自己的 queryset 和 serializer_class。
-    permission_classes = [RBACPermission]
-    required_permissions = {
-        "list": "demo.order.view",
-        "retrieve": "demo.order.view",
-        "create": "demo.order.create",
-    }
-```
-
-在本地 Role、Permission、RolePermission、UserRole 中配置实际授权后，
-`GET /api/rbac/me` 返回当前身份、角色及权限，路径无结尾斜杠。
-SSO 项目将 AUTH_MODE 改为 sso，配置 KEYCLOAK_ISSUER、KEYCLOAK_CLIENT_ID、可选
-KEYCLOAK_AUDIENCE，并将认证类设置为 drf_unified_rbac.authentication.KeycloakAuthentication。
-实际 demo 继续从 DRF_RBAC_AUTH_MODE / DRF_RBAC_KEYCLOAK_* 环境变量读取配置。
-
-## 当前能力与后续范围
-
-0.1.0 保留 Local / SSO 二选一、KeycloakAuthentication、Principal、AuthorizationService、
-RBACPermission、LocalRoleProvider、SSORoleProvider、get_role_provider()、四个 RBAC 模型、
-Django migrations 与 /api/rbac/me。
-Hybrid 留到后续版本（例如 0.2.x），没有增加 per-principal provider resolver、release.* 权限或发布系统业务代码。
-其他未实现能力继续以 README Current scope 为准。
+Tests used SQLite and locally signed RSA tokens with stub JWKS transport. No live
+Keycloak deployment or PostgreSQL/MySQL concurrency test was run. The declared
+Python/Django/DRF compatibility ranges were retained; this run validates the
+versions listed above rather than a full supported-version matrix.

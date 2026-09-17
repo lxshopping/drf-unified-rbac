@@ -1,350 +1,442 @@
 # drf-unified-rbac
 
-`drf-unified-rbac` is a reusable Django app that provides role-based authorization for Django REST Framework. It supports local Django users and Keycloak access tokens while keeping role-to-permission grants in the same local RBAC tables.
+Reusable Django/DRF authorization for local Django users, Keycloak SSO users,
+and both together. Version **0.2.0** adds APIView support, Hybrid role routing,
+RBAC administration APIs, and a recoverable bootstrap command.
 
-## Architecture
+## Authentication and authorization
+
+The host authenticates local users using its existing login, password, session,
+or token implementation. This package does not provide a local login endpoint.
+KeycloakAuthentication verifies SSO access tokens and produces a lightweight
+SSOUser; it never synchronizes Keycloak users into Django's user table.
 
 ```text
-Local Django User ──────────────┐
-                               ↓ adapted by Principal.from_user()
-Keycloak token → SSOUser ──────┘
-Principal
-    ↓ role lookup
-LocalRoleProvider or SSORoleProvider
-    ↓ UserRole or verified Keycloak Client Roles
-Role codes
-    ↓ permission lookup
-PermissionRepository
-    ↓ RolePermission → enabled Permission
-Permission codes
-    ↓ authorization decision
-AuthorizationService
-    ↓ action enforcement
-RBACPermission
-    ↓
-DRF ViewSet
+Host local authentication -> Django User -> Principal(auth_source="local")
+KeycloakAuthentication    -> SSOUser     -> Principal(auth_source="sso")
+                                            |
+                                   configured role provider
+                              local / sso / hybrid (per principal)
+                                            |
+                               enabled RBAC Role codes
+                                            |
+                         RolePermission -> enabled Permission codes
+                                            |
+                       AuthorizationService -> RBACPermission / me
 ```
 
-Responsibilities are intentionally separated:
+Use `Principal.from_user(request.user)` for both identities. Local subject is
+`str(user.pk)`; SSO subject is the verified token `sub`. Matching usernames or
+subjects never merge the two identities. Missing declarations, unknown sources,
+and missing grants deny access. Staff and superuser flags do not bypass RBAC.
 
-- `LocalRoleProvider` resolves `Principal → enabled role codes` only.
-- `SSORoleProvider` returns the client role codes already verified and normalized from the Keycloak token.
-- `PermissionRepository` resolves `role codes → enabled permission codes` only.
-- `AuthorizationService` coordinates both dependencies and exposes the public authorization API.
-- `RBACPermission` adapts a DRF request and ViewSet action to that service.
-- `get_role_provider()` is the only place that selects an implementation from `AUTH_MODE`.
+## Installation
 
-All incomplete or missing authorization rules are denied. Disabled roles and disabled permissions never produce an effective grant.
+Requires Python >=3.10. Package dependency ranges remain Django >=3.2,<6.0 and
+DRF >=3.11,<4.0; SSO additionally uses joserfc >=1.7,<2.0.
 
-## Build and install 0.1.0
-
-Requires Python >=3.10, Django >=5.2,<6.0, DRF >=3.17,<4.0, and
-PyJWT[crypto] >=2.8,<3.0. Pip installs these runtime dependencies automatically;
-the crypto extra supplies the RSA support used for Keycloak token verification.
-
-Build from the repository root:
+Build a distribution from this repository:
 
 ```bash
-python -m pip install build
+python -m pip install -e ".[dev,sso]"
+python -m pytest -q
 python -m build
 ```
 
-This produces:
+Outputs:
 
 ```text
-dist/
-├── drf_unified_rbac-0.1.0-py3-none-any.whl
-└── drf_unified_rbac-0.1.0.tar.gz
+dist/drf_unified_rbac-0.2.0-py3-none-any.whl
+dist/drf_unified_rbac-0.2.0.tar.gz
 ```
 
-Install the wheel in the consuming project's environment:
+Local-only consumers install the wheel:
 
 ```bash
-python -m pip install ./dist/drf_unified_rbac-0.1.0-py3-none-any.whl
+python -m pip install ./dist/drf_unified_rbac-0.2.0-py3-none-any.whl
 ```
 
-The distribution name is `drf-unified-rbac`; the Python import and Django app
-name is `drf_unified_rbac`. The wheel contains only the app and distribution
-metadata, including the app's Python migrations. `example_project/` and `tests/`
-are included in the source archive for integration testing, but never installed
-as part of the app.
-
-For repository development, install the app and development tools explicitly:
+SSO and Hybrid consumers install the SSO extra:
 
 ```bash
-python -m pip install -e ".[dev]"
+python -m pip install "./dist/drf_unified_rbac-0.2.0-py3-none-any.whl[sso]"
 ```
 
-Tests use the installed app; they do not add `src/` to `PYTHONPATH`.
+The distribution name is `drf-unified-rbac`; its import and Django app name is
+`drf_unified_rbac`. The wheel includes migrations and management commands, but
+not tests or the example project. The source archive includes both for testing.
 
-## Django settings
-
-Add the reusable app and DRF to the consuming project:
+## Django integration and auth modes
 
 ```python
 INSTALLED_APPS = [
-    # Django apps ...
+    # Existing host apps, including Django auth/contenttypes ...
     "rest_framework",
     "drf_unified_rbac",
 ]
+```
 
-DRF_RBAC = {
-    "AUTH_MODE": "local",
-}
+Mount the package in the host URL configuration:
 
+```python
+from django.urls import include, path
+
+urlpatterns = [path("api/rbac/", include("drf_unified_rbac.urls"))]
+```
+
+Run `python manage.py migrate`. The existing initial migration creates Role,
+Permission, RolePermission and UserRole. Version 0.2.0 needs no new schema
+migration. UserRole references the host's `AUTH_USER_MODEL`.
+
+| AUTH_MODE | Accepted principal | Role source |
+| --- | --- | --- |
+| `local` (default) | Local only | UserRole assignments to enabled Roles |
+| `sso` | SSO only | Token client roles intersected with enabled database Roles |
+| `hybrid` | Local and SSO | Exactly one provider selected by `principal.auth_source` |
+
+A source mismatch yields no roles or permissions. Unsupported mode values raise
+`ImproperlyConfigured`. Both individual providers enforce their source checks,
+including when called outside HybridRoleProvider. Hybrid routing never reads
+HTTP headers and never combines local assignments with SSO roles.
+
+### Local
+
+Keep the host's existing login and DRF authentication classes. For a session host:
+
+```python
+DRF_RBAC = {"AUTH_MODE": "local"}
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "rest_framework.authentication.SessionAuthentication",
-        "rest_framework.authentication.BasicAuthentication",
     ],
 }
 ```
 
-`AUTH_MODE` defaults to `"local"`. The package rejects `"oidc"` and every other unsupported value with `django.core.exceptions.ImproperlyConfigured`; there is no silent fallback.
+The host provides its normal Django session middleware and CSRF handling.
+The package consumes the resulting authenticated user for authorization.
 
-The `UserRole.user` relation uses `settings.AUTH_USER_MODEL`, so the component works with Django's default user and normal custom user models.
-
-### Keycloak SSO mode
-
-Install the normal package dependencies, then configure DRF to authenticate bearer tokens and select the SSO role provider:
+### SSO
 
 ```python
+DRF_RBAC = {
+    "AUTH_MODE": "sso",
+    "KEYCLOAK_ISSUER": "https://sso.example.com/realms/ops",
+    "KEYCLOAK_CLIENT_ID": "release",
+    "KEYCLOAK_AUDIENCE": "release",  # Defaults to client ID when omitted.
+}
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "drf_unified_rbac.authentication.KeycloakAuthentication",
     ],
 }
+```
 
+KeycloakAuthentication returns `None` when there is no Bearer header. For Bearer
+requests it verifies the RS256 signature against the realm JWKS, plus required
+`iss`, `aud`, `exp` and `sub`. Invalid tokens fail authentication. Verification
+has not been weakened for Hybrid. JWKS lookup uses a five-minute process cache
+and can refresh on key rotation.
+
+Only `resource_access[KEYCLOAK_CLIENT_ID].roles` supplies candidate role codes.
+For each candidate, an enabled local `Role` with exactly that `code` must exist;
+its RolePermission grants to enabled Permissions provide effective permissions.
+Realm roles and other clients' roles are not used. Configure Keycloak client-role
+and audience mappers as needed. No client secret or Keycloak Admin API is used.
+
+### Hybrid
+
+```python
 DRF_RBAC = {
-    "AUTH_MODE": "sso",
-    "KEYCLOAK_ISSUER": "https://sso.example.com/realms/myrealm",
-    "KEYCLOAK_CLIENT_ID": "my-app",
-    # Optional; defaults to KEYCLOAK_CLIENT_ID.
-    "KEYCLOAK_AUDIENCE": "my-api",
+    "AUTH_MODE": "hybrid",
+    "KEYCLOAK_ISSUER": "https://sso.example.com/realms/ops",
+    "KEYCLOAK_CLIENT_ID": "release",
+    "KEYCLOAK_AUDIENCE": "release",
+}
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework.authentication.SessionAuthentication",
+        "drf_unified_rbac.authentication.KeycloakAuthentication",
+    ],
 }
 ```
 
-The authenticator accepts `Authorization: Bearer <access_token>`, obtains the realm JWKS from `{KEYCLOAK_ISSUER}/protocol/openid-connect/certs`, and verifies the RS256 signature plus `exp`, `iss`, and `aud`. It reads roles only from `resource_access[KEYCLOAK_CLIENT_ID].roles`. No client secret is needed for access-token verification, and no Django user is created.
+DRF uses the first authenticator that succeeds. With the order above, an active
+local session takes precedence over a Bearer token. Session-authenticated unsafe
+requests retain DRF's CSRF requirements. The host should choose and document the
+credential precedence it intends, and clients should send the selected identity's
+credentials.
 
-On the Keycloak side, create client roles whose names exactly match local `Role.code` values and assign them to users. The access token must include those roles under the configured client in `resource_access`, and its `aud` claim must contain `KEYCLOAK_AUDIENCE` (or `KEYCLOAK_CLIENT_ID` when the audience setting is omitted). Add/configure the corresponding client-role and audience token mappers when the client scope does not already emit those claims.
+For host JWT authentication, configure the host class together with
+KeycloakAuthentication, for example `HostLocalAuthentication` followed by
+`KeycloakAuthentication`, **only with an explicit host authentication-routing
+contract**. If both consume `Authorization: Bearer`, listing both classes alone
+does not define safe routing. The host must distinguish which authenticator owns
+the credential, returning `None` only for credentials outside its scheme or
+route, and must fully verify the selected token. Do not catch a failed token
+validation and fall back to another identity. This package does not automatically
+route two Bearer authenticators or reimplement host authentication.
 
-## URLs
+## APIView and ViewSet usage
 
-In the consuming project's `urls.py`:
-
-```python
-from django.urls import include, path
-
-urlpatterns = [
-    path("api/rbac/", include("drf_unified_rbac.urls")),
-]
-```
-
-This exposes `GET /api/rbac/me` (no trailing slash). The app owns only `me`;
-the consuming project chooses the `api/rbac/` prefix.
-
-## Migration
-
-After installing and adding the app:
-
-```bash
-python manage.py migrate
-```
-
-The initial migration creates `Permission`, `Role`, `RolePermission`, and `UserRole`. Demo business permissions are not inserted by the reusable app's migration.
-
-## ViewSet usage
-
-Map every protected action to one permission code:
+APIView declares one permission:
 
 ```python
-from rest_framework.decorators import action
-from rest_framework.viewsets import ViewSet
-
+from rest_framework.views import APIView
 from drf_unified_rbac.permissions import RBACPermission
 
-
-class DemoOrderViewSet(ViewSet):
+class ReleaseOrderDetailView(APIView):
     permission_classes = [RBACPermission]
-    required_permissions = {
-        "list": "demo.order.view",
-        "create": "demo.order.create",
-        "approve": "demo.order.approve",
-    }
-
-    @action(detail=False, methods=["post"])
-    def approve(self, request):
-        ...
+    required_permission = "release.order.view"
+    # Implement the host's get()/other handlers.
 ```
 
-An anonymous user, a missing mapping, an unmapped action, an unknown permission code, or a disabled grant path receives a denial.
-
-## Example project
-
-The repository contains an SQLite example under `example_project/`:
-
-```bash
-python example_project/manage.py migrate
-python example_project/manage.py seed_demo_rbac
-python example_project/manage.py createsuperuser
-python example_project/manage.py runserver
-```
-
-The seed command creates these reusable demo relationships without putting business data in component migrations:
-
-```text
-demo_viewer   → demo.order.view
-demo_operator → demo.order.view, demo.order.create
-demo_approver → demo.order.view, demo.order.approve
-demo_admin    → demo.order.view, demo.order.create, demo.order.approve
-```
-
-Assign a seeded role to an existing user in the Django shell:
+ViewSet retains the existing action mapping:
 
 ```python
-from django.contrib.auth import get_user_model
-from drf_unified_rbac.models import Role, UserRole
+from rest_framework.viewsets import ModelViewSet
+from drf_unified_rbac.permissions import RBACPermission
 
-user = get_user_model().objects.get(username="alice")
-role = Role.objects.get(code="demo_operator")
-UserRole.objects.get_or_create(user=user, role=role)
+class ReleaseOrderViewSet(ModelViewSet):
+    permission_classes = [RBACPermission]
+    # Supply the host's queryset, serializer_class and approve action.
+    required_permissions = {
+        "list": "release.order.view",
+        "retrieve": "release.order.view",
+        "create": "release.order.create",
+        "approve": "release.order.approve",
+    }
 ```
 
-Available endpoints are:
+A non-blank string `required_permission` takes precedence. Otherwise RBACPermission
+looks up `required_permissions[view.action]`. Missing actions, mappings, empty or
+non-string codes, invalid principals, and unknown grants deny access. A single
+permission applies to every implemented method on that view; use separate views
+or action mappings when operations need distinct permissions.
 
-```text
-GET  /api/rbac/me          authenticated identity, roles and permissions
-GET  /api/orders/          demo.order.view
-POST /api/orders/          demo.order.create
-POST /api/orders/approve/  demo.order.approve
-```
+## Unified current-user contract
 
-The example defaults to local `SessionAuthentication` and `BasicAuthentication`. Set `DRF_RBAC_AUTH_MODE=sso`, `DRF_RBAC_KEYCLOAK_ISSUER`, `DRF_RBAC_KEYCLOAK_CLIENT_ID`, and optionally `DRF_RBAC_KEYCLOAK_AUDIENCE` in the environment to run it in SSO mode.
-
-### Current user's RBAC information
-
-`GET /api/rbac/me` requires authentication only (`IsAuthenticated`), with no
-business permission check. It adapts the authenticated user through `Principal`
-and calls `AuthorizationService.get_roles()` / `get_permissions()`, reusing the
-configured role provider and `PermissionRepository`. SSO identities need no local
-user or primary key. Role and permission arrays are deduplicated and sorted.
+`GET /api/rbac/me` keeps its original path **without a trailing slash**, URL name
+`drf_unified_rbac:me`, and four response fields:
 
 ```json
 {
-  "username": "alice",
+  "username": "admin",
   "auth_source": "local",
-  "roles": ["admin"],
-  "permissions": ["demo.order.create", "demo.order.view"]
+  "roles": ["release_admin"],
+  "permissions": ["release.order.create", "release.order.view"]
 }
 ```
 
-Authenticated users without roles receive HTTP 200 with both arrays empty.
-Roles without effective grants yield an empty permissions array. Role codes
-retain the provider's existing semantics: local roles are enabled assigned
-roles; SSO roles come from the configured client's verified token claims.
-Permissions always honor the repository's enabled role/permission filters.
-Invalid or expired SSO bearer tokens retain the authenticator's HTTP 401 response.
+An SSO response has the same structure with `auth_source: "sso"`. Arrays are
+unique and sorted. **Roles are effective, enabled RBAC database roles**: unknown
+or disabled token roles are excluded. A valid role with no enabled permissions
+can appear in `roles` while contributing nothing to `permissions`. Raw token
+roles are not exposed. Disabled permissions never appear.
 
-Local mode (use an existing user's username; curl prompts for the password):
+The endpoint requires authentication only, without a business permission. Valid
+users with no grants, including an identity outside the configured single-source
+mode, receive HTTP 200 with empty arrays. Invalid principal adaptation returns
+403. Anonymous/invalid credential responses follow DRF's configured authenticator
+order (Keycloak-only uses 401; session-first commonly uses 403).
 
-```bash
-curl -i -u alice http://127.0.0.1:8000/api/rbac/me
+### Frontend Hybrid flow
+
+```text
+Local login button -> host local login API -> keep host credentials -> GET /api/rbac/me
+SSO login button   -> Keycloak code flow -> callback/access token -> GET /api/rbac/me
 ```
 
-SSO mode (use access tokens for users with `admin`, `viewer`, or no client role;
-role names must match the existing local `Role.code` grants):
+After either flow, menus, routes, pages and buttons consume `me.permissions`.
+The post-login authorization logic is identical; do not derive permissions from
+`auth_source` or usernames. Server-side RBAC remains authoritative. The frontend,
+redirect/callback handling and host local login are outside this package.
 
-```bash
-curl -i -H "Authorization: Bearer <access_token>" http://127.0.0.1:8000/api/rbac/me
-curl -i -H "Authorization: Bearer invalid-token" http://127.0.0.1:8000/api/rbac/me
+## RBAC Admin API
+
+The API manages local Role, Permission, RolePermission and Local UserRole data.
+It does not manage Keycloak users, passwords, realms or clients. Every endpoint
+uses RBACPermission, with no IsAdminUser/staff/superuser bypass. The existing
+Django Admin integration remains separate and retains Django's own admin rules.
+
+Paths below are relative to `/api/rbac/admin/` and have trailing slashes:
+
+| Path | Method | Required permission |
+| --- | --- | --- |
+| `roles/` | GET / POST | `rbac.role.view` / `rbac.role.create` |
+| `roles/<id>/` | GET / PATCH / DELETE | `rbac.role.view` / `rbac.role.update` / `rbac.role.delete` |
+| `permissions/` | GET / POST | `rbac.permission.view` / `rbac.permission.create` |
+| `permissions/<id>/` | GET / PATCH | `rbac.permission.view` / `rbac.permission.update` |
+| `roles/<id>/permissions/` | GET / PUT | `rbac.role.view` / `rbac.role.update` |
+| `users/` | GET | `rbac.user_role.view` |
+| `users/<id>/roles/` | GET / PUT | `rbac.user_role.view` / `rbac.user_role.update` |
+
+Role and Permission representations contain `id`, `code`, `name`, `description`,
+`enabled`, `created_at`, `updated_at`. Create requires unique non-blank `code`
+and `name`; description and enabled are optional. IDs/timestamps are read-only.
+PATCH updates supplied fields. Role DELETE returns 204 and sets `enabled=False`,
+preserving relations; PATCH `enabled=True` restores it. Permission DELETE is not
+provided; disable with PATCH. Role codes are the SSO mapping keys, so coordinate
+any rename with Keycloak configuration.
+
+### Pagination and search
+
+Roles, permissions and users lists always use DRF page-number pagination:
+
+```text
+GET /api/rbac/admin/roles/?search=release&page=1&page_size=25
+GET /api/rbac/admin/permissions/?search=order
+GET /api/rbac/admin/users/?search=alice
 ```
 
-On Windows PowerShell, use `curl.exe` for these commands. The example seed uses
-`demo_admin` / `demo_viewer`, so tokens using those seed grants must use the same
-codes. The endpoint introduces no new role mappings or seed data.
+Default page size is 50; clients may request up to 200. Response shape:
 
-## Direct service usage
+```json
+{"count": 1, "next": null, "previous": null, "results": [{"id": 7, "username": "alice", "is_active": true}]}
+```
 
-Business integrations should depend on the service rather than query RBAC tables directly:
+Roles/permissions search `code` and `name`; users search the host's
+`USERNAME_FIELD`, the storage field behind Django's `get_username()`. The user
+serializer uses only `pk`, `get_username()` and `is_active` when available. No
+password, credential or additional profile field is exposed or editable. Custom
+user primary keys, including UUID, are supported. Lists have stable ordering.
+
+### Complete relationship replacement
+
+GET and PUT use the same code-set shape:
+
+```json
+{"permission_codes": ["release.order.create", "release.order.view"]}
+```
+
+```json
+{"role_codes": ["release_admin", "release_viewer"]}
+```
+
+PUT replaces the full relation set; `[]` clears it. All codes must exist and be
+unique; unknown or duplicate codes return 400 without changing old relations.
+Missing target objects return 404. Validation, deletion and insertion are inside
+one transaction; the parent role/user is locked on databases supporting row
+locks. SQLite uses its own write locking rather than SELECT FOR UPDATE semantics.
+
+Admin relationship GET returns stored assignments, including disabled objects,
+so administrators can inspect and repair configuration. Effective authorization
+and `/me` always filter disabled roles/permissions. No per-user grant cache delays
+changes.
+
+## Bootstrap and recovery
+
+```bash
+python manage.py rbac_bootstrap_admin
+python manage.py rbac_bootstrap_admin --username admin
+```
+
+The command creates/restores all nine built-in permissions listed above, ensures
+they are enabled, ensures `rbac_admin` exists and is enabled, and restores every
+built-in RolePermission relation. Repeated runs do not duplicate rows. Existing
+names and additional custom grants are preserved. The command is transactional.
+
+`--username` optionally binds the role to an existing host user, looking up the
+host's `USERNAME_FIELD`. It never creates a user or password. Unknown usernames
+produce CommandError without partial bootstrap changes. Use the host's existing
+account provisioning first.
+
+For SSO, run bootstrap without a username and create/assign a client role named
+`rbac_admin` in the configured Keycloak client. The token should contain:
+
+```json
+{"resource_access": {"release": {"roles": ["rbac_admin"]}}}
+```
+
+That role maps to the enabled database `rbac_admin` role. The command makes no
+Keycloak Admin API calls. Its explicit purpose includes restoring disabled
+built-in administration grants.
+
+## Service and cache contract
 
 ```python
 from drf_unified_rbac.domain import Principal
 from drf_unified_rbac.services import get_authorization_service
 
 principal = Principal.from_user(request.user)
-allowed = get_authorization_service().has_permission(
-    principal,
-    "demo.order.approve",
-)
+service = get_authorization_service()
+roles = service.get_roles(principal)
+permissions = service.get_permissions(principal)
+allowed = service.has_permission(principal, "release.order.view")
 ```
 
-Provider and service instances are reused within a process through `functools.lru_cache`. No per-user roles or permissions are cached. Tests can reset construction with:
+The service API is unchanged. Factories reuse provider/service instances through
+`lru_cache`; HybridRoleProvider routes on every call. Roles and permissions are
+queried fresh. After overriding settings in tests or explicitly reloading settings:
 
 ```python
-from drf_unified_rbac.factories import get_role_provider
-from drf_unified_rbac.services import get_authorization_service
-
-get_authorization_service.cache_clear()
-get_role_provider.cache_clear()
+from drf_unified_rbac.services import clear_rbac_caches
+clear_rbac_caches()
 ```
 
-## Test
+Individual `get_authorization_service.cache_clear()` and
+`get_role_provider.cache_clear()` remain available; clear both together when
+changing AUTH_MODE. Do not rebuild the service on every request.
+
+## Example and validation
 
 ```bash
-python -m pytest -q
-python example_project/manage.py check
-python example_project/manage.py makemigrations --check
-```
-
-The test suite covers model constraints, enabled-state filtering, provider and repository behavior, service decisions, factory errors and instance reuse, and DRF default-deny integration.
-
-### Verify the installed wheel in a clean environment
-
-After building, create and activate a fresh environment (use a new directory
-name if `.venv-package-test` already exists):
-
-```bash
-python -m venv .venv-package-test
-# POSIX: source .venv-package-test/bin/activate
-# Windows PowerShell: .\.venv-package-test\Scripts\Activate.ps1
-python -m pip install ./dist/drf_unified_rbac-0.1.0-py3-none-any.whl
-python -m pip check
-python -c "import drf_unified_rbac; print(drf_unified_rbac.__file__)"
-python -m pip show drf-unified-rbac
-python -m zipfile -l dist/drf_unified_rbac-0.1.0-py3-none-any.whl
-```
-
-The import path and pip location must point to this environment's
-`site-packages`, with version `0.1.0`. Do not install the app editable or add
-`src/` to `PYTHONPATH` during this verification.
-
-Use the same environment to exercise the integration consumer and full suite:
-
-```bash
-python example_project/manage.py check
 python example_project/manage.py migrate
-python example_project/manage.py makemigrations --check --dry-run
-python -m pip install "pytest>=8.0" "pytest-django>=4.8"
-python -m pytest -q
 python example_project/manage.py seed_demo_rbac
+python example_project/manage.py createsuperuser
+python example_project/manage.py rbac_bootstrap_admin --username admin
 python example_project/manage.py runserver
 ```
 
-The example's `migrate` command uses `example_project/db.sqlite3`. Use a fresh
-copy of `example_project/` without its database to verify table creation from
-scratch while preserving an existing demo database. Assign a demo role to a
-local user as shown above, then test `/api/rbac/me` and the order endpoints.
-Automated SSO tests use signed test tokens and a stub JWKS lookup; a live
-Keycloak server is not required for these checks.
+The example's Local mode retains SessionAuthentication and BasicAuthentication.
+Set `DRF_RBAC_AUTH_MODE` to `sso` or `hybrid` and configure
+`DRF_RBAC_KEYCLOAK_ISSUER`, `DRF_RBAC_KEYCLOAK_CLIENT_ID`, and optionally
+`DRF_RBAC_KEYCLOAK_AUDIENCE`. Hybrid adds KeycloakAuthentication after the local
+classes. Business examples are ViewSet `/api/orders/` and APIView
+`/api/order-details/<id>/`, using seeded `demo.order.*` permissions.
 
-## Current scope
+Development validation with complete SSO dependencies:
 
-Version 0.1.0 supports the mutually exclusive `AUTH_MODE="local"` and
-`AUTH_MODE="sso"` modes, Keycloak authentication, Principal adaptation,
-local and SSO role providers, local role/permission grants, `RBACPermission`,
-the authorization service, Django migrations, and `/api/rbac/me`.
-Hybrid mode is deferred to a later release (for example 0.2.x); 0.1.0 does not
-resolve providers per principal or combine authentication modes.
+```bash
+python -m pip install -e ".[dev,sso]"
+python -m pytest -q
+python example_project/manage.py check
+python example_project/manage.py makemigrations --check --dry-run
+python -m build
+```
 
+Verify the built wheel in a **new** virtual environment:
 
-SSO support is intentionally limited to verification of Keycloak bearer access tokens and extraction of one client's roles. Group mapping, realm roles, composite-role expansion, UserInfo/Admin API calls, user synchronization, login redirects/callbacks, token refresh, object permissions, data scopes, ABAC, Redis, management APIs, frontend code, multi-tenancy, and audit systems are outside this release.
+```bash
+python -m venv .venv-wheel-check
+# Activate its Scripts/Activate.ps1 on Windows or bin/activate on POSIX.
+python -m pip install "./dist/drf_unified_rbac-0.2.0-py3-none-any.whl[sso]"
+python -m pip check
+python -I -c "import drf_unified_rbac; print(drf_unified_rbac.__version__, drf_unified_rbac.__file__)"
+python -m pip install "pytest>=8.0" "pytest-django>=4.8"
+python -m pytest -q
+```
+
+The imported package must reside in that environment's site-packages, not src.
+Run example migrations in a fresh copy of the example without an existing
+SQLite database. Tests use RSA-signed tokens and stub JWKS transport; no live
+Keycloak server is needed. Actual release checks are recorded in
+[PACKAGING_VALIDATION.md](PACKAGING_VALIDATION.md).
+
+## Upgrade from 0.1.x
+
+- Install 0.2.0; include `[sso]` for Keycloak authentication.
+- Keep the existing host login and business ViewSet mappings. Select `hybrid`
+  only when both local and SSO identities should be authorized.
+- Keep the same URL include and `/api/rbac/me` fields. New admin routes live below
+  `admin/`; bootstrap their permissions and bind the intended administrator.
+- No new schema migration is required; normal `migrate` remains safe.
+- **Intentional response semantics change:** SSO `get_roles()` / `me.roles` now
+  exclude token roles missing or disabled in the RBAC database. Ensure expected
+  Keycloak role codes have enabled RBAC Role rows. Permissions already required
+  enabled database grants and retain that behavior.
+- Invalid/unauthenticated user adapters and unknown explicit auth sources fail
+  safely. Valid Django users and SSOUser retain the unified Principal contract.
+
+Object-level permissions, data scopes, ABAC, multi-tenancy, user synchronization,
+Keycloak administration, frontend code and host credential management remain
+outside this release.
