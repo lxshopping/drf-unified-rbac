@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import jwt
 import pytest
@@ -53,7 +53,7 @@ def make_keycloak_token(keycloak_private_key, keycloak_config):
             "preferred_username": "alice.sso",
             "iss": keycloak_config["KEYCLOAK_ISSUER"],
             "aud": keycloak_config["KEYCLOAK_AUDIENCE"],
-            "exp": datetime.now(UTC) + timedelta(minutes=5),
+            "exp": datetime.now(timezone.utc) + timedelta(minutes=5),
             "resource_access": {
                 keycloak_config["KEYCLOAK_CLIENT_ID"]: {
                     "roles": ["admin", "operator"],

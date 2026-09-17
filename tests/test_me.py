@@ -1,5 +1,5 @@
 from base64 import b64encode
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -161,7 +161,7 @@ def test_sso_me_invalid_token_returns_401(sso_client, make_keycloak_token, inval
     if invalid == "malformed":
         token = "not-a-jwt"
     elif invalid == "expired":
-        token = make_keycloak_token(exp=datetime.now(UTC) - timedelta(minutes=1))
+        token = make_keycloak_token(exp=datetime.now(timezone.utc) - timedelta(minutes=1))
     elif invalid == "signature":
         token = make_keycloak_token(
             signing_key=rsa.generate_private_key(public_exponent=65537, key_size=2048)

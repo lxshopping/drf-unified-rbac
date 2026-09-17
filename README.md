@@ -36,19 +36,46 @@ Responsibilities are intentionally separated:
 
 All incomplete or missing authorization rules are denied. Disabled roles and disabled permissions never produce an effective grant.
 
-## Installation
+## Build and install 0.1.0
 
-Python 3.10 or newer is required.
+Requires Python >=3.10, Django >=5.2,<6.0, DRF >=3.17,<4.0, and
+PyJWT[crypto] >=2.8,<3.0. Pip installs these runtime dependencies automatically;
+the crypto extra supplies the RSA support used for Keycloak token verification.
 
-```bash
-pip install -e .
-```
-
-For local development:
+Build from the repository root:
 
 ```bash
-pip install -e ".[dev]"
+python -m pip install build
+python -m build
 ```
+
+This produces:
+
+```text
+dist/
+├── drf_unified_rbac-0.1.0-py3-none-any.whl
+└── drf_unified_rbac-0.1.0.tar.gz
+```
+
+Install the wheel in the consuming project's environment:
+
+```bash
+python -m pip install ./dist/drf_unified_rbac-0.1.0-py3-none-any.whl
+```
+
+The distribution name is `drf-unified-rbac`; the Python import and Django app
+name is `drf_unified_rbac`. The wheel contains only the app and distribution
+metadata, including the app's Python migrations. `example_project/` and `tests/`
+are included in the source archive for integration testing, but never installed
+as part of the app.
+
+For repository development, install the app and development tools explicitly:
+
+```bash
+python -m pip install -e ".[dev]"
+```
+
+Tests use the installed app; they do not add `src/` to `PYTHONPATH`.
 
 ## Django settings
 
@@ -63,6 +90,13 @@ INSTALLED_APPS = [
 
 DRF_RBAC = {
     "AUTH_MODE": "local",
+}
+
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework.authentication.SessionAuthentication",
+        "rest_framework.authentication.BasicAuthentication",
+    ],
 }
 ```
 
@@ -93,6 +127,21 @@ DRF_RBAC = {
 The authenticator accepts `Authorization: Bearer <access_token>`, obtains the realm JWKS from `{KEYCLOAK_ISSUER}/protocol/openid-connect/certs`, and verifies the RS256 signature plus `exp`, `iss`, and `aud`. It reads roles only from `resource_access[KEYCLOAK_CLIENT_ID].roles`. No client secret is needed for access-token verification, and no Django user is created.
 
 On the Keycloak side, create client roles whose names exactly match local `Role.code` values and assign them to users. The access token must include those roles under the configured client in `resource_access`, and its `aud` claim must contain `KEYCLOAK_AUDIENCE` (or `KEYCLOAK_CLIENT_ID` when the audience setting is omitted). Add/configure the corresponding client-role and audience token mappers when the client scope does not already emit those claims.
+
+## URLs
+
+In the consuming project's `urls.py`:
+
+```python
+from django.urls import include, path
+
+urlpatterns = [
+    path("api/rbac/", include("drf_unified_rbac.urls")),
+]
+```
+
+This exposes `GET /api/rbac/me` (no trailing slash). The app owns only `me`;
+the consuming project chooses the `api/rbac/` prefix.
 
 ## Migration
 
@@ -170,7 +219,7 @@ POST /api/orders/          demo.order.create
 POST /api/orders/approve/  demo.order.approve
 ```
 
-The example defaults to local `SessionAuthentication` and `BasicAuthentication`. Set `DRF_RBAC_AUTH_MODE=sso`, `KEYCLOAK_ISSUER`, `KEYCLOAK_CLIENT_ID`, and optionally `KEYCLOAK_AUDIENCE` in the environment to run it in SSO mode.
+The example defaults to local `SessionAuthentication` and `BasicAuthentication`. Set `DRF_RBAC_AUTH_MODE=sso`, `DRF_RBAC_KEYCLOAK_ISSUER`, `DRF_RBAC_KEYCLOAK_CLIENT_ID`, and optionally `DRF_RBAC_KEYCLOAK_AUDIENCE` in the environment to run it in SSO mode.
 
 ### Current user's RBAC information
 
@@ -242,13 +291,60 @@ get_role_provider.cache_clear()
 ## Test
 
 ```bash
-pytest -q
+python -m pytest -q
 python example_project/manage.py check
 python example_project/manage.py makemigrations --check
 ```
 
 The test suite covers model constraints, enabled-state filtering, provider and repository behavior, service decisions, factory errors and instance reuse, and DRF default-deny integration.
 
+### Verify the installed wheel in a clean environment
+
+After building, create and activate a fresh environment (use a new directory
+name if `.venv-package-test` already exists):
+
+```bash
+python -m venv .venv-package-test
+# POSIX: source .venv-package-test/bin/activate
+# Windows PowerShell: .\.venv-package-test\Scripts\Activate.ps1
+python -m pip install ./dist/drf_unified_rbac-0.1.0-py3-none-any.whl
+python -m pip check
+python -c "import drf_unified_rbac; print(drf_unified_rbac.__file__)"
+python -m pip show drf-unified-rbac
+python -m zipfile -l dist/drf_unified_rbac-0.1.0-py3-none-any.whl
+```
+
+The import path and pip location must point to this environment's
+`site-packages`, with version `0.1.0`. Do not install the app editable or add
+`src/` to `PYTHONPATH` during this verification.
+
+Use the same environment to exercise the integration consumer and full suite:
+
+```bash
+python example_project/manage.py check
+python example_project/manage.py migrate
+python example_project/manage.py makemigrations --check --dry-run
+python -m pip install "pytest>=8.0" "pytest-django>=4.8"
+python -m pytest -q
+python example_project/manage.py seed_demo_rbac
+python example_project/manage.py runserver
+```
+
+The example's `migrate` command uses `example_project/db.sqlite3`. Use a fresh
+copy of `example_project/` without its database to verify table creation from
+scratch while preserving an existing demo database. Assign a demo role to a
+local user as shown above, then test `/api/rbac/me` and the order endpoints.
+Automated SSO tests use signed test tokens and a stub JWKS lookup; a live
+Keycloak server is not required for these checks.
+
 ## Current scope
+
+Version 0.1.0 supports the mutually exclusive `AUTH_MODE="local"` and
+`AUTH_MODE="sso"` modes, Keycloak authentication, Principal adaptation,
+local and SSO role providers, local role/permission grants, `RBACPermission`,
+the authorization service, Django migrations, and `/api/rbac/me`.
+Hybrid mode is deferred to a later release (for example 0.2.x); 0.1.0 does not
+resolve providers per principal or combine authentication modes.
+
 
 SSO support is intentionally limited to verification of Keycloak bearer access tokens and extraction of one client's roles. Group mapping, realm roles, composite-role expansion, UserInfo/Admin API calls, user synchronization, login redirects/callbacks, token refresh, object permissions, data scopes, ABAC, Redis, management APIs, frontend code, multi-tenancy, and audit systems are outside this release.

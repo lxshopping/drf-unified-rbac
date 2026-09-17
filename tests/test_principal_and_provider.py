@@ -50,7 +50,7 @@ def test_local_provider_rejects_non_local_principal():
     assert LocalRoleProvider().get_roles(principal) == set()
 
 
-def test_principal_from_sso_claims_extracts_configured_client_roles():
+def test_principal_from_sso_user_extracts_configured_client_roles():
     claims = {
         "sub": "external-user",
         "preferred_username": "external",
@@ -59,7 +59,7 @@ def test_principal_from_sso_claims_extracts_configured_client_roles():
         },
     }
 
-    principal = Principal.from_sso_claims(claims, client_id="my-app")
+    principal = Principal.from_user(SSOUser(claims, client_id="my-app"))
 
     assert principal == Principal(
         subject="external-user",
@@ -90,9 +90,8 @@ def test_principal_from_sso_user_preserves_identity_and_roles():
 
 
 def test_missing_client_roles_returns_empty_collection():
-    principal = Principal.from_sso_claims(
-        {"sub": "external-user"},
-        client_id="my-app",
+    principal = Principal.from_user(
+        SSOUser({"sub": "external-user"}, client_id="my-app"),
     )
 
     assert principal.role_codes == ()

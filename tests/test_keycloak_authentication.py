@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -111,7 +111,7 @@ def test_token_with_invalid_signature_is_rejected(
 @pytest.mark.parametrize(
     ("overrides"),
     [
-        {"exp": datetime.now(UTC) - timedelta(seconds=1)},
+        {"exp": datetime.now(timezone.utc) - timedelta(seconds=1)},
         {"iss": "https://wrong-issuer.example.test/realms/demo"},
         {"aud": "wrong-audience"},
     ],
