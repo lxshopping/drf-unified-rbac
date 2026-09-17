@@ -1,0 +1,4 @@
+include pytest.ini
+recursive-include tests *.py
+recursive-include example_project *.py
+global-exclude *.py[cod] *.sqlite3 *.bak *.tmp *~

@@ -1,0 +1,45 @@
+from django.contrib.auth import get_user_model
+from django.core.management.base import BaseCommand, CommandError
+from django.db import transaction
+
+from drf_unified_rbac.admin_api.constants import ADMIN_PERMISSIONS
+from drf_unified_rbac.models import Permission, Role, RolePermission, UserRole
+
+
+class Command(BaseCommand):
+    help = "Create or restore the RBAC admin role and its built-in permissions."
+
+    def add_arguments(self, parser):
+        parser.add_argument("--username", help="Existing host user's USERNAME_FIELD value")
+
+    @transaction.atomic
+    def handle(self, *args, **options):
+        user = None
+        if options["username"] is not None:
+            model = get_user_model()
+            try:
+                user = model._default_manager.get(**{
+                    model.USERNAME_FIELD: options["username"],
+                })
+            except model.DoesNotExist as exc:
+                raise CommandError("The specified local user does not exist.") from exc
+            except model.MultipleObjectsReturned as exc:
+                raise CommandError("The username does not identify a unique local user.") from exc
+
+        role, _ = Role.objects.get_or_create(
+            code="rbac_admin", defaults={"name": "RBAC administrator"},
+        )
+        if not role.enabled:
+            role.enabled = True
+            role.save(update_fields=["enabled", "updated_at"])
+        for code, name in ADMIN_PERMISSIONS.items():
+            permission, _ = Permission.objects.get_or_create(
+                code=code, defaults={"name": name},
+            )
+            if not permission.enabled:
+                permission.enabled = True
+                permission.save(update_fields=["enabled", "updated_at"])
+            RolePermission.objects.get_or_create(role=role, permission=permission)
+        if user is not None:
+            UserRole.objects.get_or_create(user=user, role=role)
+        self.stdout.write(self.style.SUCCESS("RBAC admin role and permissions are ready."))

@@ -1,0 +1,21 @@
+from drf_unified_rbac.domain import Principal
+
+from .base import BaseRoleProvider
+
+
+class HybridRoleProvider(BaseRoleProvider):
+    """Route each principal to exactly one provider; never combine identities."""
+
+    def __init__(
+        self, local_provider: BaseRoleProvider, sso_provider: BaseRoleProvider,
+    ) -> None:
+        self._local_provider = local_provider
+        self._sso_provider = sso_provider
+
+    def get_roles(self, principal: Principal) -> set[str]:
+        source = getattr(principal, "auth_source", None)
+        if source == "local":
+            return self._local_provider.get_roles(principal)
+        if source == "sso":
+            return self._sso_provider.get_roles(principal)
+        return set()

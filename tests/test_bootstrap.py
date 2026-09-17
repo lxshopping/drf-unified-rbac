@@ -1,0 +1,62 @@
+from io import StringIO
+
+import pytest
+from django.core.management import call_command, CommandError
+
+from drf_unified_rbac.admin_api.constants import ADMIN_PERMISSIONS
+from drf_unified_rbac.models import Permission, Role, RolePermission, UserRole
+
+pytestmark = pytest.mark.django_db
+
+
+def bootstrap(**kwargs):
+    call_command("rbac_bootstrap_admin", stdout=StringIO(), **kwargs)
+
+
+def test_bootstrap_is_idempotent_and_recovers_disabled_and_missing_grants(user):
+    bootstrap(username=user.get_username())
+    counts = (Role.objects.count(), Permission.objects.count(), RolePermission.objects.count(), UserRole.objects.count())
+    timestamps = (list(Role.objects.values_list("updated_at", flat=True)),
+                  list(Permission.objects.values_list("updated_at", flat=True)))
+    bootstrap(username=user.get_username())
+    assert timestamps == (list(Role.objects.values_list("updated_at", flat=True)),
+                          list(Permission.objects.values_list("updated_at", flat=True)))
+    assert counts == (1, len(ADMIN_PERMISSIONS), len(ADMIN_PERMISSIONS), 1)
+    assert counts == (Role.objects.count(), Permission.objects.count(), RolePermission.objects.count(), UserRole.objects.count())
+    Role.objects.update(enabled=False)
+    Permission.objects.update(enabled=False)
+    RolePermission.objects.first().delete()
+    Permission.objects.last().delete()
+    bootstrap()
+    role = Role.objects.get(code="rbac_admin")
+    assert role.enabled
+    assert set(role.permissions.filter(enabled=True).values_list("code", flat=True)) == set(ADMIN_PERMISSIONS)
+    assert RolePermission.objects.count() == len(ADMIN_PERMISSIONS)
+    assert UserRole.objects.count() == 1
+
+
+def test_bootstrap_does_not_create_users(django_user_model):
+    bootstrap()
+    assert not django_user_model.objects.exists()
+    assert not UserRole.objects.exists()
+
+
+def test_unknown_username_is_command_error_without_partial_changes(django_user_model):
+    with pytest.raises(CommandError, match="does not exist"):
+        bootstrap(username="missing")
+    assert not Role.objects.exists()
+    assert not Permission.objects.exists()
+    assert not django_user_model.objects.exists()
+
+
+def test_bootstrap_preserves_custom_grants_and_names():
+    bootstrap()
+    role = Role.objects.get(code="rbac_admin")
+    role.name = "Custom name"
+    role.save()
+    custom = Permission.objects.create(code="custom.item.view", name="Custom")
+    RolePermission.objects.create(role=role, permission=custom)
+    bootstrap()
+    role.refresh_from_db()
+    assert role.name == "Custom name"
+    assert role.permissions.filter(pk=custom.pk).exists()

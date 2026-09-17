@@ -1,0 +1,177 @@
+from types import SimpleNamespace
+
+import pytest
+from django.contrib.auth.models import AnonymousUser
+from django.urls import include, path
+from rest_framework.authentication import SessionAuthentication
+from rest_framework.response import Response
+from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
+from rest_framework.views import APIView
+
+from drf_unified_rbac.authentication import KeycloakAuthentication, SSOUser
+from drf_unified_rbac.domain import Principal
+from drf_unified_rbac.factories import get_role_provider
+from drf_unified_rbac.models import Permission, Role, RolePermission, UserRole
+from drf_unified_rbac.permissions import RBACPermission
+from drf_unified_rbac.providers import HybridRoleProvider, LocalRoleProvider, SSORoleProvider
+from drf_unified_rbac.services import clear_rbac_caches, get_authorization_service
+from drf_unified_rbac.views import MeView
+
+pytestmark = pytest.mark.django_db
+
+
+class LocalResource(APIView):
+    authentication_classes = [SessionAuthentication, KeycloakAuthentication]
+    permission_classes = [RBACPermission]
+    required_permission = "demo.local.view"
+
+    def get(self, request):
+        return Response({"ok": True})
+
+
+class SSOResource(LocalResource):
+    required_permission = "demo.sso.view"
+
+
+urlpatterns = [
+    path("api/rbac/", include("drf_unified_rbac.urls")),
+    path("local/", LocalResource.as_view()),
+    path("sso/", SSOResource.as_view()),
+]
+
+
+@pytest.fixture
+def identities(user):
+    for code in ("local", "sso"):
+        role = Role.objects.create(code=code, name=code)
+        permission = Permission.objects.create(code=f"demo.{code}.view", name=code)
+        RolePermission.objects.create(role=role, permission=permission)
+        if code == "local":
+            UserRole.objects.create(user=user, role=role)
+    Role.objects.create(code="disabled", name="Disabled", enabled=False)
+    sso = SSOUser({
+        "sub": str(user.pk), "preferred_username": user.get_username(),
+        "resource_access": {"my-app": {"roles": ["sso", "disabled", "missing"]}},
+    }, "my-app")
+    return user, sso
+
+
+@pytest.mark.parametrize("mode,local_roles,sso_roles", [
+    ("local", {"local"}, set()), ("sso", set(), {"sso"}),
+    ("hybrid", {"local"}, {"sso"}),
+])
+def test_mode_matrix_isolates_identical_username_and_subject(settings, identities, mode, local_roles, sso_roles):
+    settings.DRF_RBAC = {"AUTH_MODE": mode}
+    service = get_authorization_service()
+    for user, roles in zip(identities, (local_roles, sso_roles)):
+        principal = Principal.from_user(user)
+        assert service.get_roles(principal) == roles
+        assert service.get_permissions(principal) == {f"demo.{code}.view" for code in roles}
+
+
+def test_provider_source_checks_are_independent(identities):
+    local, sso = map(Principal.from_user, identities)
+    assert LocalRoleProvider().get_roles(sso) == set()
+    assert SSORoleProvider().get_roles(local) == set()
+    hybrid = HybridRoleProvider(LocalRoleProvider(), SSORoleProvider())
+    for principal in (None, SimpleNamespace(), Principal("1", "alice", "unknown")):
+        for provider in (hybrid, LocalRoleProvider(), SSORoleProvider()):
+            assert provider.get_roles(principal) == set()
+    assert LocalRoleProvider().get_roles(Principal("bad-pk", "alice", "local")) == set()
+
+
+@pytest.mark.parametrize("user", [
+    None, AnonymousUser(), SimpleNamespace(pk=1, is_authenticated=False),
+    SimpleNamespace(is_authenticated=True),
+    SimpleNamespace(pk=1, is_authenticated=True, auth_source="unknown"),
+    SimpleNamespace(is_authenticated=True, auth_source="sso", subject="", claims={}),
+    SimpleNamespace(is_authenticated=True, auth_source="sso", subject="sub", claims=None),
+    SimpleNamespace(is_authenticated=True, auth_source="sso", subject="sub", claims={}, role_codes="admin"),
+])
+def test_invalid_user_fails_safely(user):
+    with pytest.raises((ValueError, AttributeError, TypeError)):
+        Principal.from_user(user)
+    assert RBACPermission.get_principal(SimpleNamespace(user=user)) is None
+
+
+def test_cache_reload_and_live_grant_changes(settings, identities):
+    settings.DRF_RBAC = {"AUTH_MODE": "local"}
+    local_service = get_authorization_service()
+    assert local_service is get_authorization_service()
+    settings.DRF_RBAC = {"AUTH_MODE": "hybrid"}
+    clear_rbac_caches()
+    service = get_authorization_service()
+    assert service is not local_service
+    assert isinstance(get_role_provider(), HybridRoleProvider)
+    principal = Principal.from_user(identities[1])
+    assert service.get_permissions(principal) == {"demo.sso.view"}
+    Role.objects.filter(code="sso").update(enabled=False)
+    assert service.get_roles(principal) == set()
+    assert service.get_permissions(principal) == set()
+
+
+@pytest.mark.parametrize("declaration,expected", [
+    ("demo.local.view", 200), ("demo.sso.view", 403), (None, 403),
+    ("", 403), ("   ", 403), (42, 403),
+])
+def test_apiview_declaration(identities, declaration, expected):
+    request = APIRequestFactory().get("/")
+    force_authenticate(request, user=identities[0])
+    response = LocalResource.as_view(required_permission=declaration)(request)
+    assert response.status_code == expected
+
+
+def test_single_permission_takes_precedence_and_invalid_single_falls_back(identities):
+    checker = RBACPermission()
+    request = SimpleNamespace(user=identities[0])
+    view = SimpleNamespace(action="list", required_permissions={"list": "demo.sso.view"},
+                           required_permission="demo.local.view")
+    assert checker.has_permission(request, view)
+    view.required_permission = ""
+    assert not checker.has_permission(request, view)
+    view.required_permissions = {"list": "demo.local.view"}
+    assert checker.has_permission(request, view)
+    for action, mapping in ((None, {}), ("missing", {}), ("list", {"list": " "}), ("list", [])):
+        view.action, view.required_permissions = action, mapping
+        assert not checker.has_permission(request, view)
+
+
+@pytest.mark.parametrize("mode", ["local", "sso", "hybrid"])
+def test_real_session_and_signed_sso_share_me(
+    settings, monkeypatch, identities, stub_jwks, keycloak_config, make_keycloak_token, mode,
+):
+    settings.ROOT_URLCONF = __name__
+    settings.DRF_RBAC = {**keycloak_config, "AUTH_MODE": mode}
+    monkeypatch.setattr(MeView, "authentication_classes", [SessionAuthentication, KeycloakAuthentication])
+    local, _ = identities
+    client = APIClient()
+    client.force_login(local)
+    response = client.get("/api/rbac/me")
+    assert response.status_code == 200
+    assert response.json() == {
+        "username": local.get_username(), "auth_source": "local",
+        "roles": ["local"] if mode != "sso" else [],
+        "permissions": ["demo.local.view"] if mode != "sso" else [],
+    }
+    assert client.get("/local/").status_code == (200 if mode != "sso" else 403)
+    assert client.get("/sso/").status_code == 403
+    client.logout()
+    token = make_keycloak_token(sub=str(local.pk), preferred_username=local.get_username(),
+        resource_access={"my-app": {"roles": ["sso", "missing", "disabled"]}})
+    client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+    response = client.get("/api/rbac/me")
+    assert response.status_code == 200
+    assert response.json() == {
+        "username": local.get_username(), "auth_source": "sso",
+        "roles": ["sso"] if mode != "local" else [],
+        "permissions": ["demo.sso.view"] if mode != "local" else [],
+    }
+    assert client.get("/sso/").status_code == (200 if mode != "local" else 403)
+    assert client.get("/local/").status_code == 403
+
+
+def test_me_invalid_authenticated_identity_is_403(settings):
+    settings.ROOT_URLCONF = __name__
+    client = APIClient()
+    client.force_authenticate(SimpleNamespace(is_authenticated=True, auth_source="unknown"))
+    assert client.get("/api/rbac/me").status_code == 403

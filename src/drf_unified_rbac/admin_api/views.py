@@ -1,0 +1,152 @@
+from django.contrib.auth import get_user_model
+from django.core.exceptions import FieldDoesNotExist
+from django.db import IntegrityError, transaction
+from rest_framework import mixins, serializers, status, viewsets
+from rest_framework.decorators import action
+from rest_framework.filters import SearchFilter
+from rest_framework.generics import get_object_or_404
+from rest_framework.pagination import PageNumberPagination
+from rest_framework.response import Response
+
+from drf_unified_rbac.models import Permission, Role, RolePermission, UserRole
+from drf_unified_rbac.permissions import RBACPermission
+
+from .serializers import (
+    LocalUserSerializer, PermissionSerializer, RolePermissionsSerializer,
+    RoleSerializer, UserRolesSerializer,
+)
+
+
+class AdminPagination(PageNumberPagination):
+    page_size = 50
+    page_size_query_param = "page_size"
+    max_page_size = 200
+
+
+class AdminViewSet(viewsets.GenericViewSet):
+    permission_classes = [RBACPermission]
+    pagination_class = AdminPagination
+    filter_backends = [SearchFilter]
+
+    def _save(self, serializer):
+        try:
+            with transaction.atomic():
+                serializer.save()
+        except IntegrityError as exc:
+            # Includes a concurrent duplicate-code write after serializer validation.
+            raise serializers.ValidationError({"code": "Code already exists."}) from exc
+
+    def perform_create(self, serializer):
+        self._save(serializer)
+
+    def perform_update(self, serializer):
+        self._save(serializer)
+
+
+class RoleViewSet(
+    mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.CreateModelMixin,
+    mixins.UpdateModelMixin, mixins.DestroyModelMixin, AdminViewSet,
+):
+    queryset = Role.objects.all().order_by("code")
+    serializer_class = RoleSerializer
+    search_fields = ["code", "name"]
+    required_permissions = {
+        "list": "rbac.role.view",
+        "retrieve": "rbac.role.view",
+        "create": "rbac.role.create",
+        "partial_update": "rbac.role.update",
+        "destroy": "rbac.role.delete",
+        "permissions": "rbac.role.view",
+        "set_permissions": "rbac.role.update",
+    }
+    http_method_names = ["get", "post", "patch", "put", "delete", "head", "options"]
+
+    def destroy(self, request, *args, **kwargs):
+        role = self.get_object()
+        role.enabled = False
+        role.save(update_fields=["enabled", "updated_at"])
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=["get"])
+    def permissions(self, request, pk=None):
+        role = self.get_object()
+        return Response({"permission_codes": list(
+            role.permissions.order_by("code").values_list("code", flat=True)
+        )})
+
+    @permissions.mapping.put
+    def set_permissions(self, request, pk=None):
+        with transaction.atomic():
+            self.queryset = self.get_queryset().select_for_update()
+            role = self.get_object()
+            serializer = RolePermissionsSerializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            permissions = serializer.validated_data["permission_codes"]
+            RolePermission.objects.filter(role=role).delete()
+            RolePermission.objects.bulk_create([
+                RolePermission(role=role, permission=permission)
+                for permission in permissions
+            ])
+        return Response({"permission_codes": [obj.code for obj in permissions]})
+
+
+class PermissionViewSet(
+    mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.CreateModelMixin,
+    mixins.UpdateModelMixin, AdminViewSet,
+):
+    queryset = Permission.objects.all().order_by("code")
+    serializer_class = PermissionSerializer
+    search_fields = ["code", "name"]
+    http_method_names = ["get", "post", "patch", "head", "options"]
+    required_permissions = {
+        "list": "rbac.permission.view",
+        "retrieve": "rbac.permission.view",
+        "create": "rbac.permission.create",
+        "partial_update": "rbac.permission.update",
+    }
+
+
+class LocalUserViewSet(mixins.ListModelMixin, AdminViewSet):
+    serializer_class = LocalUserSerializer
+    http_method_names = ["get", "put", "head", "options"]
+    required_permissions = {
+        "list": "rbac.user_role.view",
+        "roles": "rbac.user_role.view",
+        "set_roles": "rbac.user_role.update",
+    }
+
+    def get_queryset(self):
+        model = get_user_model()
+        # USERNAME_FIELD is the searchable storage field behind get_username().
+        self.search_fields = [model.USERNAME_FIELD]
+        fields = [model._meta.pk.name, model.USERNAME_FIELD]
+        try:
+            active_field = model._meta.get_field("is_active")
+        except FieldDoesNotExist:
+            pass
+        else:
+            if active_field.concrete:
+                fields.append("is_active")
+        return model._default_manager.only(*fields).order_by("pk")
+
+    @action(detail=True, methods=["get"])
+    def roles(self, request, pk=None):
+        user = self.get_object()
+        return Response({"role_codes": list(
+            UserRole.objects.filter(user=user).order_by("role__code")
+            .values_list("role__code", flat=True)
+        )})
+
+    @roles.mapping.put
+    def set_roles(self, request, pk=None):
+        with transaction.atomic():
+            # Lock the host user, including when it currently has no assignments.
+            queryset = self.filter_queryset(self.get_queryset()).select_for_update()
+            user = get_object_or_404(queryset, pk=pk)
+            self.check_object_permissions(request, user)
+            serializer = UserRolesSerializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            roles = serializer.validated_data["role_codes"]
+            UserRole.objects.filter(user=user).delete()
+            UserRole.objects.bulk_create([UserRole(user=user, role=role) for role in roles])
+        return Response({"role_codes": [obj.code for obj in roles]})

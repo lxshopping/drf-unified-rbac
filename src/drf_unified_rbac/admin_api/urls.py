@@ -1,0 +1,9 @@
+from rest_framework.routers import SimpleRouter
+
+from .views import LocalUserViewSet, PermissionViewSet, RoleViewSet
+
+router = SimpleRouter()
+router.register("roles", RoleViewSet, basename="rbac-role")
+router.register("permissions", PermissionViewSet, basename="rbac-permission")
+router.register("users", LocalUserViewSet, basename="rbac-user")
+urlpatterns = router.urls

@@ -1,0 +1,11 @@
+import uuid
+
+from django.contrib.auth.base_user import AbstractBaseUser, BaseUserManager
+from django.db import models
+
+
+class User(AbstractBaseUser):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    login = models.CharField(max_length=150, unique=True)
+    USERNAME_FIELD = "login"
+    objects = BaseUserManager()

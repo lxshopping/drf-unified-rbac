@@ -1,0 +1,16 @@
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+
+def test_custom_user_contract_in_isolated_django_process():
+    env = os.environ.copy()
+    env.pop("DJANGO_SETTINGS_MODULE", None)
+    result = subprocess.run(
+        [sys.executable, "-m", "tests.custom_user_check"],
+        cwd=Path(__file__).resolve().parent.parent, env=env,
+        text=True, capture_output=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "passed" in result.stdout

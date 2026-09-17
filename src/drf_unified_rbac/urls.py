@@ -1,0 +1,11 @@
+from django.urls import include, path
+
+from drf_unified_rbac.views import MeView
+
+
+app_name = "drf_unified_rbac"
+
+urlpatterns = [
+    path("admin/", include("drf_unified_rbac.admin_api.urls")),
+    path("me", MeView.as_view(), name="me"),
+]

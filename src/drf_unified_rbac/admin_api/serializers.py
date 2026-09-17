@@ -1,0 +1,53 @@
+from rest_framework import serializers
+
+from drf_unified_rbac.models import Permission, Role
+
+
+class RoleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Role
+        fields = ("id", "code", "name", "description", "enabled", "created_at", "updated_at")
+        read_only_fields = ("id", "created_at", "updated_at")
+
+
+class PermissionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Permission
+        fields = ("id", "code", "name", "description", "enabled", "created_at", "updated_at")
+        read_only_fields = ("id", "created_at", "updated_at")
+
+
+class LocalUserSerializer(serializers.Serializer):
+    """Use the host user contract, without exposing credentials or profiles."""
+
+    def to_representation(self, instance):
+        result = {"id": instance.pk, "username": str(instance.get_username())}
+        if hasattr(instance, "is_active"):
+            result["is_active"] = instance.is_active
+        return result
+
+
+class CodeSetField(serializers.ListField):
+    """Validate a complete, duplicate-free set before replacing any grants."""
+
+    def __init__(self, *, model, **kwargs):
+        self.model = model
+        super().__init__(child=serializers.CharField(max_length=150), **kwargs)
+
+    def to_internal_value(self, data):
+        codes = super().to_internal_value(data)
+        if len(codes) != len(set(codes)):
+            raise serializers.ValidationError("Duplicate codes are not allowed.")
+        objects = list(self.model.objects.filter(code__in=codes).order_by("code"))
+        missing = sorted(set(codes) - {obj.code for obj in objects})
+        if missing:
+            raise serializers.ValidationError({"unknown_codes": missing})
+        return objects
+
+
+class RolePermissionsSerializer(serializers.Serializer):
+    permission_codes = CodeSetField(model=Permission)
+
+
+class UserRolesSerializer(serializers.Serializer):
+    role_codes = CodeSetField(model=Role)

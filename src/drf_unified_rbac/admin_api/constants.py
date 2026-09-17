@@ -1,0 +1,13 @@
+"""The complete built-in administration permission contract."""
+
+ADMIN_PERMISSIONS = {
+    "rbac.role.view": "View RBAC roles",
+    "rbac.role.create": "Create RBAC roles",
+    "rbac.role.update": "Update RBAC roles and grants",
+    "rbac.role.delete": "Disable RBAC roles",
+    "rbac.permission.view": "View RBAC permissions",
+    "rbac.permission.create": "Create RBAC permissions",
+    "rbac.permission.update": "Update RBAC permissions",
+    "rbac.user_role.view": "View local users and role assignments",
+    "rbac.user_role.update": "Update local user role assignments",
+}

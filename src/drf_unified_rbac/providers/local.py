@@ -1,0 +1,20 @@
+from django.core.exceptions import ValidationError
+
+from drf_unified_rbac.domain import Principal
+from drf_unified_rbac.models import UserRole
+
+from .base import BaseRoleProvider
+
+
+class LocalRoleProvider(BaseRoleProvider):
+    """Resolve enabled roles assigned to a local Django user only."""
+
+    def get_roles(self, principal: Principal) -> set[str]:
+        if getattr(principal, "auth_source", None) != "local":
+            return set()
+        try:
+            return set(UserRole.objects.filter(
+                user_id=principal.subject, role__enabled=True,
+            ).values_list("role__code", flat=True))
+        except (AttributeError, TypeError, ValueError, ValidationError):
+            return set()

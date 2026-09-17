@@ -1,0 +1,117 @@
+from datetime import datetime, timedelta, timezone
+from io import BytesIO
+from urllib.error import URLError
+
+import pytest
+from cryptography.hazmat.primitives.asymmetric import rsa
+from django.test import override_settings
+from rest_framework.exceptions import AuthenticationFailed
+from rest_framework.test import APIRequestFactory
+
+import drf_unified_rbac.authentication.keycloak as module
+from drf_unified_rbac.authentication import KeycloakAuthentication, SSOUser
+
+
+def request_with_authorization(value=None):
+    headers = {"HTTP_AUTHORIZATION": value} if value is not None else {}
+    return APIRequestFactory().get("/api/orders/", **headers)
+
+
+def authenticate(token):
+    return KeycloakAuthentication().authenticate(request_with_authorization(f"Bearer {token}"))
+
+
+@pytest.mark.parametrize("header", [None, "Basic credentials", "Token local-token"])
+def test_other_authentication_returns_none(header):
+    assert KeycloakAuthentication().authenticate(request_with_authorization(header)) is None
+
+
+@pytest.mark.parametrize("header", ["Bearer", "Bearer one two", b"Bearer \xff"])
+def test_malformed_bearer_header_raises_authentication_failed(header):
+    with pytest.raises(AuthenticationFailed):
+        KeycloakAuthentication().authenticate(request_with_authorization(header))
+
+
+def test_valid_keycloak_token_returns_sso_user_and_claims(stub_jwks, keycloak_config, make_keycloak_token):
+    with override_settings(DRF_RBAC=keycloak_config):
+        user, claims = authenticate(make_keycloak_token())
+    assert isinstance(user, SSOUser)
+    assert user.subject == "keycloak-user-123"
+    assert user.username == "alice.sso"
+    assert user.is_authenticated and not user.is_anonymous
+    assert user.role_codes == ("admin", "operator")
+    assert claims == user.claims
+
+
+def test_username_falls_back_to_subject(stub_jwks, keycloak_config, make_keycloak_token):
+    with override_settings(DRF_RBAC=keycloak_config):
+        user, _ = authenticate(make_keycloak_token(preferred_username=None))
+    assert user.username == "keycloak-user-123"
+
+
+@pytest.mark.parametrize("invalid", [
+    "expired", "issuer", "audience", "signature", "malformed", "algorithm",
+    "missing-exp", "missing-iss", "missing-aud", "missing-sub", "empty-sub",
+])
+def test_invalid_tokens_are_rejected(stub_jwks, keycloak_config, make_keycloak_token, invalid):
+    overrides = {
+        "expired": {"exp": datetime.now(timezone.utc) - timedelta(minutes=1)},
+        "issuer": {"iss": "https://wrong.example.test"},
+        "audience": {"aud": "wrong-api"},
+        "signature": {"signing_key": rsa.generate_private_key(public_exponent=65537, key_size=2048)},
+        "algorithm": {"algorithm": "RS512"},
+        "empty-sub": {"sub": ""},
+    }
+    if invalid.startswith("missing-"):
+        token = make_keycloak_token(omit=(invalid.removeprefix("missing-"),))
+    elif invalid == "malformed":
+        token = "not-a-jwt"
+    else:
+        token = make_keycloak_token(**overrides[invalid])
+    with override_settings(DRF_RBAC=keycloak_config), pytest.raises(AuthenticationFailed):
+        authenticate(token)
+
+
+def test_audience_defaults_to_client_id(stub_jwks, keycloak_config, make_keycloak_token):
+    config = {**keycloak_config, "KEYCLOAK_AUDIENCE": None}
+    with override_settings(DRF_RBAC=config):
+        user, _ = authenticate(make_keycloak_token(aud=config["KEYCLOAK_CLIENT_ID"]))
+    assert user.is_authenticated
+
+
+def test_jwks_cache_and_force_refresh(monkeypatch, jwk_set):
+    import json
+    calls = []
+    def fetch(request, **kwargs):
+        calls.append(request.full_url)
+        return BytesIO(json.dumps(jwk_set.as_dict()).encode())
+    monkeypatch.setattr(module, "urlopen", fetch)
+    monkeypatch.setattr(module, "_jwks_cache", {})
+    url = "https://sso.example.test/certs"
+    first = module.get_jwk_set(url)
+    assert module.get_jwk_set(url) is first
+    module.get_jwk_set(url, force_refresh=True)
+    assert calls == [url, url]
+
+
+def test_jwks_network_failure_is_authentication_failure(monkeypatch):
+    def fetch(*args, **kwargs):
+        raise URLError("JWKS unavailable")
+    monkeypatch.setattr(module, "urlopen", fetch)
+    monkeypatch.setattr(module, "_jwks_cache", {})
+    with pytest.raises(AuthenticationFailed, match="Unable to load"):
+        module.get_jwk_set("https://sso.example.test/certs")
+
+
+def test_rotated_key_refreshes_jwks(monkeypatch, keycloak_config, jwk_set, make_keycloak_token):
+    from joserfc.jwk import KeySet, RSAKey
+    wrong_key = RSAKey.generate_key(2048, parameters={"kid": "old-key"})
+    calls = []
+    def lookup(url, *, force_refresh=False):
+        calls.append(force_refresh)
+        return jwk_set if force_refresh else KeySet([wrong_key])
+    monkeypatch.setattr(module, "get_jwk_set", lookup)
+    with override_settings(DRF_RBAC=keycloak_config):
+        user, _ = authenticate(make_keycloak_token())
+    assert user.is_authenticated
+    assert calls == [False, True]

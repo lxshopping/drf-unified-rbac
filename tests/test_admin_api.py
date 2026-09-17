@@ -1,0 +1,225 @@
+from io import StringIO
+
+import pytest
+from django.core.management import call_command
+from django.urls import include, path
+from rest_framework.test import APIClient
+
+from drf_unified_rbac.admin_api.views import AdminViewSet
+from drf_unified_rbac.authentication import KeycloakAuthentication
+from drf_unified_rbac.models import Permission, Role, RolePermission, UserRole
+
+pytestmark = pytest.mark.django_db
+urlpatterns = [path("api/rbac/", include("drf_unified_rbac.urls"))]
+BASE = "/api/rbac/admin/"
+
+
+@pytest.fixture
+def client(settings, user):
+    settings.ROOT_URLCONF = __name__
+    client = APIClient()
+    client.force_authenticate(user)
+    return client
+
+
+@pytest.fixture
+def objects(user):
+    role = Role.objects.create(code="target", name="Target role")
+    permission = Permission.objects.create(code="target.item.view", name="Target permission")
+    return {"role": role.pk, "permission": permission.pk, "user": user.pk}
+
+
+@pytest.fixture
+def grant(user):
+    def assign(code):
+        role, _ = Role.objects.get_or_create(code="actor", defaults={"name": "Actor"})
+        permission, _ = Permission.objects.get_or_create(code=code, defaults={"name": code})
+        UserRole.objects.get_or_create(user=user, role=role)
+        RolePermission.objects.get_or_create(role=role, permission=permission)
+    return assign
+
+
+@pytest.mark.parametrize("method,url,payload,permission,expected", [
+    ("get", "roles/", None, "rbac.role.view", 200),
+    ("get", "roles/{role}/", None, "rbac.role.view", 200),
+    ("post", "roles/", {"code": "new", "name": "New"}, "rbac.role.create", 201),
+    ("patch", "roles/{role}/", {"name": "Updated"}, "rbac.role.update", 200),
+    ("delete", "roles/{role}/", None, "rbac.role.delete", 204),
+    ("get", "permissions/", None, "rbac.permission.view", 200),
+    ("get", "permissions/{permission}/", None, "rbac.permission.view", 200),
+    ("post", "permissions/", {"code": "new.item.view", "name": "New"}, "rbac.permission.create", 201),
+    ("patch", "permissions/{permission}/", {"enabled": False}, "rbac.permission.update", 200),
+    ("get", "roles/{role}/permissions/", None, "rbac.role.view", 200),
+    ("put", "roles/{role}/permissions/", {"permission_codes": ["target.item.view"]}, "rbac.role.update", 200),
+    ("get", "users/", None, "rbac.user_role.view", 200),
+    ("get", "users/{user}/roles/", None, "rbac.user_role.view", 200),
+    ("put", "users/{user}/roles/", {"role_codes": ["target"]}, "rbac.user_role.update", 200),
+])
+def test_each_admin_action_requires_its_own_permission(client, objects, grant, method, url, payload, permission, expected):
+    endpoint = BASE + url.format(**objects)
+    request = getattr(client, method)
+    assert request(endpoint, payload, format="json").status_code == 403
+    grant("unrelated.item.view")
+    assert request(endpoint, payload, format="json").status_code == 403
+    grant(permission)
+    assert request(endpoint, payload, format="json").status_code == expected
+
+
+def test_superuser_staff_and_anonymous_have_no_bypass(client, user):
+    user.is_superuser = user.is_staff = True
+    user.save()
+    assert client.get(BASE + "roles/").status_code == 403
+    client.force_authenticate(user=None)
+    assert client.get(BASE + "roles/").status_code in (401, 403)
+
+
+def test_role_delete_is_soft_and_immediately_revokes_grants(client, grant, objects, user):
+    from drf_unified_rbac.domain import Principal
+    from drf_unified_rbac.services import get_authorization_service
+    grant("rbac.role.delete")
+    target = Role.objects.get(pk=objects["role"])
+    UserRole.objects.create(user=user, role=target)
+    RolePermission.objects.create(role=target, permission_id=objects["permission"])
+    service = get_authorization_service()
+    principal = Principal.from_user(user)
+    assert service.has_permission(principal, "target.item.view")
+    assert client.delete(BASE + f"roles/{target.pk}/").status_code == 204
+    target.refresh_from_db()
+    assert not target.enabled
+    assert RolePermission.objects.filter(role=target).exists()
+    assert UserRole.objects.filter(role=target).exists()
+    assert not service.has_permission(principal, "target.item.view")
+
+
+@pytest.mark.parametrize("resource,code,right", [
+    ("roles", "duplicate", "rbac.role.create"),
+    ("permissions", "duplicate.item.view", "rbac.permission.create"),
+])
+def test_duplicate_resource_codes_are_400(client, grant, resource, code, right):
+    grant(right)
+    data = {"code": code, "name": "Duplicate"}
+    assert client.post(BASE + resource + "/", data).status_code == 201
+    response = client.post(BASE + resource + "/", data)
+    assert response.status_code == 400 and "code" in response.data
+
+
+@pytest.mark.parametrize("kind", ["permission", "role"])
+@pytest.mark.parametrize("invalid", [["missing"], ["target", "missing"], ["target", "target"], "target", None])
+def test_invalid_bulk_replace_preserves_all_old_relationships(client, objects, grant, kind, invalid):
+    if kind == "permission":
+        grant("rbac.role.update")
+        RolePermission.objects.create(role_id=objects["role"], permission_id=objects["permission"])
+        queryset = RolePermission.objects.filter(role_id=objects["role"])
+        path = f"roles/{objects['role']}/permissions/"
+        field = "permission_codes"
+        if isinstance(invalid, list):
+            invalid = ["target.item.view" if code == "target" else code for code in invalid]
+    else:
+        grant("rbac.user_role.update")
+        UserRole.objects.create(user_id=objects["user"], role_id=objects["role"])
+        queryset = UserRole.objects.filter(user_id=objects["user"])
+        path = f"users/{objects['user']}/roles/"
+        field = "role_codes"
+    old = list(queryset.values_list("pk", flat=True))
+    response = client.put(BASE + path, {field: invalid}, format="json")
+    assert response.status_code == 400
+    assert list(queryset.values_list("pk", flat=True)) == old
+
+
+@pytest.mark.parametrize("kind", ["permission", "role"])
+def test_bulk_replace_and_clear(client, objects, grant, kind):
+    if kind == "permission":
+        grant("rbac.role.update")
+        endpoint = BASE + f"roles/{objects['role']}/permissions/"
+        field, code = "permission_codes", "target.item.view"
+        queryset = RolePermission.objects.filter(role_id=objects["role"])
+    else:
+        grant("rbac.user_role.update")
+        # Use another user so replacing does not remove the actor's own grant.
+        from django.contrib.auth import get_user_model
+        target = get_user_model().objects.create_user(username="target")
+        endpoint = BASE + f"users/{target.pk}/roles/"
+        field, code = "role_codes", "target"
+        queryset = UserRole.objects.filter(user=target)
+    response = client.put(endpoint, {field: [code]}, format="json")
+    assert response.status_code == 200 and response.data == {field: [code]}
+    assert queryset.count() == 1
+    response = client.put(endpoint, {field: []}, format="json")
+    assert response.status_code == 200 and response.data == {field: []}
+    assert not queryset.exists()
+
+
+@pytest.mark.parametrize("kind", ["permission", "role"])
+def test_failure_after_delete_rolls_back(client, grant, objects, monkeypatch, kind):
+    if kind == "permission":
+        grant("rbac.role.update")
+        model = RolePermission
+        model.objects.create(role_id=objects["role"], permission_id=objects["permission"])
+        endpoint = f"roles/{objects['role']}/permissions/"
+        data = {"permission_codes": ["target.item.view"]}
+    else:
+        grant("rbac.user_role.update")
+        model = UserRole
+        model.objects.create(user_id=objects["user"], role_id=objects["role"])
+        endpoint = f"users/{objects['user']}/roles/"
+        data = {"role_codes": ["target"]}
+    old = list(model.objects.values_list("pk", flat=True))
+    def fail(*args, **kwargs):
+        raise RuntimeError("simulated write failure")
+    monkeypatch.setattr(model.objects, "bulk_create", fail)
+    with pytest.raises(RuntimeError, match="simulated"):
+        client.put(BASE + endpoint, data, format="json")
+    assert list(model.objects.values_list("pk", flat=True)) == old
+
+
+@pytest.mark.parametrize("endpoint,right", [
+    ("roles/99999/", "rbac.role.view"),
+    ("permissions/99999/", "rbac.permission.view"),
+    ("users/not-a-pk/roles/", "rbac.user_role.view"),
+])
+def test_missing_or_invalid_object_is_404(client, grant, endpoint, right):
+    grant(right)
+    assert client.get(BASE + endpoint).status_code == 404
+
+
+@pytest.mark.parametrize("resource,right", [
+    ("roles", "rbac.role.view"), ("permissions", "rbac.permission.view"),
+    ("users", "rbac.user_role.view"),
+])
+def test_list_pagination_and_search(client, grant, django_user_model, resource, right):
+    grant(right)
+    if resource == "users":
+        django_user_model.objects.bulk_create([
+            django_user_model(username=f"person{i:03}") for i in range(55)
+        ])
+        search, expected = "person054", "username"
+    else:
+        model = Role if resource == "roles" else Permission
+        model.objects.bulk_create([
+            model(code=f"item{i:03}", name=f"Label{i:03}") for i in range(55)
+        ])
+        search, expected = "Label054", "name"
+    url = BASE + resource + "/"
+    page = client.get(url).json()
+    assert len(page["results"]) == 50 and page["count"] > 50 and page["next"]
+    assert client.get(url, {"page": 2}).json()["results"]
+    assert len(client.get(url, {"page_size": 2}).json()["results"]) == 2
+    found = client.get(url, {"search": search}).json()
+    assert found["count"] == 1 and found["results"][0][expected] == search
+    if resource == "users":
+        assert set(found["results"][0]) == {"id", "username", "is_active"}
+    else:
+        assert client.get(url, {"search": "item053"}).json()["count"] == 1
+
+
+def test_signed_sso_can_admin_without_local_user(client, settings, monkeypatch, stub_jwks, keycloak_config, make_keycloak_token, django_user_model):
+    call_command("rbac_bootstrap_admin", stdout=StringIO())
+    settings.DRF_RBAC = {**keycloak_config, "AUTH_MODE": "hybrid"}
+    monkeypatch.setattr(AdminViewSet, "authentication_classes", [KeycloakAuthentication])
+    client.force_authenticate(user=None)
+    count = django_user_model.objects.count()
+    token = make_keycloak_token(resource_access={"my-app": {"roles": ["rbac_admin"]}})
+    client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+    assert client.get(BASE + "roles/").status_code == 200
+    assert client.post(BASE + "roles/", {"code": "from-sso", "name": "SSO"}).status_code == 201
+    assert django_user_model.objects.count() == count

@@ -1,0 +1,88 @@
+import os
+from pathlib import Path
+
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+SECRET_KEY = "development-only-rbac-example-key"
+DEBUG = True
+ALLOWED_HOSTS = ["localhost", "127.0.0.1", "testserver"]
+
+INSTALLED_APPS = [
+    "django.contrib.admin",
+    "django.contrib.auth",
+    "django.contrib.contenttypes",
+    "django.contrib.sessions",
+    "django.contrib.messages",
+    "django.contrib.staticfiles",
+    "rest_framework",
+    "drf_unified_rbac",
+    "demo",
+]
+
+MIDDLEWARE = [
+    "django.middleware.security.SecurityMiddleware",
+    "django.contrib.sessions.middleware.SessionMiddleware",
+    "django.middleware.common.CommonMiddleware",
+    "django.middleware.csrf.CsrfViewMiddleware",
+    "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "django.contrib.messages.middleware.MessageMiddleware",
+]
+
+ROOT_URLCONF = "config.urls"
+
+TEMPLATES = [
+    {
+        "BACKEND": "django.template.backends.django.DjangoTemplates",
+        "DIRS": [],
+        "APP_DIRS": True,
+        "OPTIONS": {
+            "context_processors": [
+                "django.template.context_processors.request",
+                "django.contrib.auth.context_processors.auth",
+                "django.contrib.messages.context_processors.messages",
+            ],
+        },
+    }
+]
+
+WSGI_APPLICATION = "config.wsgi.application"
+
+DATABASES = {
+    "default": {
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": BASE_DIR / "db.sqlite3",
+    }
+}
+
+AUTH_PASSWORD_VALIDATORS = []
+LANGUAGE_CODE = "en-us"
+TIME_ZONE = "UTC"
+USE_I18N = True
+USE_TZ = True
+STATIC_URL = "static/"
+DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+RBAC_AUTH_MODE = os.environ.get("DRF_RBAC_AUTH_MODE", "local").strip().lower()
+KEYCLOAK_CLIENT_ID = os.environ.get("DRF_RBAC_KEYCLOAK_CLIENT_ID")
+
+LOCAL_AUTHENTICATION = [
+    "rest_framework.authentication.SessionAuthentication",
+    "rest_framework.authentication.BasicAuthentication",
+]
+SSO_AUTHENTICATION = ["drf_unified_rbac.authentication.KeycloakAuthentication"]
+
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": {
+        "local": LOCAL_AUTHENTICATION,
+        "sso": SSO_AUTHENTICATION,
+        "hybrid": LOCAL_AUTHENTICATION + SSO_AUTHENTICATION,
+    }.get(RBAC_AUTH_MODE, LOCAL_AUTHENTICATION),
+}
+
+DRF_RBAC = {
+    "AUTH_MODE": RBAC_AUTH_MODE,
+    "KEYCLOAK_ISSUER": os.environ.get("DRF_RBAC_KEYCLOAK_ISSUER"),
+    "KEYCLOAK_CLIENT_ID": KEYCLOAK_CLIENT_ID,
+    "KEYCLOAK_AUDIENCE": os.environ.get("DRF_RBAC_KEYCLOAK_AUDIENCE", KEYCLOAK_CLIENT_ID),
+}

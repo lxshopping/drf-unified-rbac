@@ -1,0 +1,49 @@
+from collections.abc import Mapping
+from typing import Any
+
+from rest_framework.permissions import BasePermission
+
+from drf_unified_rbac.domain import Principal
+from drf_unified_rbac.services import get_authorization_service
+
+
+class RBACPermission(BasePermission):
+    """Enforce APIView or ViewSet declarations, denying missing/invalid rules.
+
+    A non-blank ``required_permission`` takes precedence. Otherwise resolve
+    ``required_permissions[view.action]``. Authentication and a valid principal
+    are always required; staff and superuser flags never bypass RBAC.
+    """
+
+    @staticmethod
+    def get_principal(request: Any) -> Principal | None:
+        user = getattr(request, "user", None)
+        if user is None or not getattr(user, "is_authenticated", False):
+            return None
+        try:
+            return Principal.from_user(user)
+        except (AttributeError, TypeError, ValueError):
+            return None
+
+    def has_permission(self, request: Any, view: Any) -> bool:
+        principal = self.get_principal(request)
+        if principal is None:
+            return False
+
+        permission_code = getattr(view, "required_permission", None)
+        if not isinstance(permission_code, str) or not permission_code.strip():
+            action = getattr(view, "action", None)
+            required_permissions = getattr(view, "required_permissions", None)
+            if (
+                not isinstance(action, str) or not action
+                or not isinstance(required_permissions, Mapping)
+            ):
+                return False
+            permission_code = required_permissions.get(action)
+        if not isinstance(permission_code, str) or not permission_code.strip():
+            return False
+
+        return get_authorization_service().has_permission(
+            principal,
+            permission_code,
+        )

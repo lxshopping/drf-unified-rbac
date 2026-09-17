@@ -1,0 +1,84 @@
+from datetime import datetime, timedelta, timezone
+
+from joserfc import jwt
+from joserfc.jwk import KeySet, RSAKey
+import pytest
+from cryptography.hazmat.primitives.asymmetric import rsa
+
+from drf_unified_rbac.services import clear_rbac_caches
+
+
+@pytest.fixture(autouse=True)
+def clear_singleton_like_caches():
+    clear_rbac_caches()
+    yield
+    clear_rbac_caches()
+
+
+@pytest.fixture
+def user(django_user_model):
+    return django_user_model.objects.create_user(
+        username="alice",
+        password="unused",
+    )
+
+
+@pytest.fixture(scope="session")
+def keycloak_private_key():
+    return rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+
+@pytest.fixture(scope="session")
+def keycloak_public_key(keycloak_private_key):
+    return keycloak_private_key.public_key()
+
+
+@pytest.fixture
+def keycloak_config():
+    return {
+        "AUTH_MODE": "sso",
+        "KEYCLOAK_ISSUER": "https://sso.example.test/realms/demo",
+        "KEYCLOAK_CLIENT_ID": "my-app",
+        "KEYCLOAK_AUDIENCE": "my-api",
+    }
+
+
+@pytest.fixture
+def make_keycloak_token(keycloak_private_key, keycloak_config):
+    def make_token(*, signing_key=None, omit=(), algorithm="RS256", **overrides):
+        claims = {
+            "sub": "keycloak-user-123",
+            "preferred_username": "alice.sso",
+            "iss": keycloak_config["KEYCLOAK_ISSUER"],
+            "aud": keycloak_config["KEYCLOAK_AUDIENCE"],
+            "exp": datetime.now(timezone.utc) + timedelta(minutes=5),
+            "resource_access": {
+                keycloak_config["KEYCLOAK_CLIENT_ID"]: {
+                    "roles": ["admin", "operator"],
+                }
+            },
+        }
+        claims.update(overrides)
+        for key in omit:
+            claims.pop(key, None)
+        claims = {key: int(value.timestamp()) if isinstance(value, datetime) else value
+                  for key, value in claims.items()}
+        return jwt.encode(
+            {"alg": algorithm, "kid": "test-key"}, claims,
+            RSAKey.import_key(signing_key or keycloak_private_key),
+            algorithms=[algorithm],
+        )
+
+    return make_token
+
+
+@pytest.fixture
+def jwk_set(keycloak_public_key):
+    return KeySet([RSAKey.import_key(keycloak_public_key, {"kid": "test-key"})])
+
+
+@pytest.fixture
+def stub_jwks(monkeypatch, jwk_set):
+    import drf_unified_rbac.authentication.keycloak as module
+    monkeypatch.setattr(module, "get_jwk_set", lambda url, **kwargs: jwk_set)
+    return jwk_set

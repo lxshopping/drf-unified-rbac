@@ -1,0 +1,15 @@
+from drf_unified_rbac.domain import Principal
+from drf_unified_rbac.models import Role
+
+from .base import BaseRoleProvider
+
+
+class SSORoleProvider(BaseRoleProvider):
+    """Resolve verified client roles to enabled roles in the RBAC database."""
+
+    def get_roles(self, principal: Principal) -> set[str]:
+        if getattr(principal, "auth_source", None) != "sso":
+            return set()
+        return set(Role.objects.filter(
+            code__in=principal.role_codes, enabled=True,
+        ).values_list("code", flat=True))
