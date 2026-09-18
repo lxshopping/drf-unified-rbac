@@ -6,7 +6,9 @@ from django.conf import settings
 settings.configure(
     SECRET_KEY="custom-user-test", USE_TZ=True, ALLOWED_HOSTS=["testserver"],
     INSTALLED_APPS=["django.contrib.auth", "django.contrib.contenttypes",
-                    "rest_framework", "tests.custom_user_app", "drf_unified_rbac"],
+                    "django.contrib.sessions", "rest_framework", "tests.custom_user_app", "drf_unified_rbac"],
+    MIDDLEWARE=["django.contrib.sessions.middleware.SessionMiddleware",
+                "django.contrib.auth.middleware.AuthenticationMiddleware"],
     AUTH_USER_MODEL="custom_user_app.User",
     DATABASES={"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"}},
     DEFAULT_AUTO_FIELD="django.db.models.BigAutoField",
@@ -47,3 +49,17 @@ from types import SimpleNamespace
 minimal = SimpleNamespace(pk="custom-id", get_username=lambda: "minimal")
 assert LocalUserSerializer(minimal).data == {"id": "custom-id", "username": "minimal"}
 print("Custom user: UUID pk, USERNAME_FIELD search, bootstrap, me and role assignment passed.")
+
+# V3 default adapter must restore a UUID/email user through real Django Session.
+user.set_password("custom-user-password")
+user.save()
+session_client = APIClient()
+response = session_client.post("/api/rbac/auth/local/login", {
+    "username": user.login, "password": "custom-user-password",
+}, format="json")
+assert response.status_code == 200, response.content
+me = session_client.get("/api/rbac/me")
+assert me.status_code == 200 and me.json()["username"] == user.login
+assert me.json()["permissions"]
+assert session_client.post("/api/rbac/auth/local/logout").status_code == 204
+assert session_client.get("/api/rbac/me").status_code in (401, 403)

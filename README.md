@@ -1,13 +1,15 @@
 # drf-unified-rbac
 
 Reusable Django/DRF authorization for local Django users, Keycloak SSO users,
-and both together. Version **0.2.0** adds APIView support, Hybrid role routing,
-RBAC administration APIs, and a recoverable bootstrap command.
+and both together. Version **0.3.0** adds a configurable Local Login Adapter and
+Django Session login/logout, preserving the V2 authorization and Admin APIs.
 
 ## Authentication and authorization
 
-The host authenticates local users using its existing login, password, session,
-or token implementation. This package does not provide a local login endpoint.
+New projects can use the package Local login endpoint with Django Auth. Existing
+hosts can keep their login and DRF authentication unchanged. RBAC does not own a
+User model, store passwords separately, or issue JWTs. All local users belong to
+the host AUTH_USER_MODEL; credential verification uses AUTHENTICATION_BACKENDS.
 KeycloakAuthentication verifies SSO access tokens and produces a lightweight
 SSOUser; it never synchronizes Keycloak users into Django's user table.
 
@@ -46,20 +48,20 @@ python -m build
 Outputs:
 
 ```text
-dist/drf_unified_rbac-0.2.0-py3-none-any.whl
-dist/drf_unified_rbac-0.2.0.tar.gz
+dist/drf_unified_rbac-0.3.0-py3-none-any.whl
+dist/drf_unified_rbac-0.3.0.tar.gz
 ```
 
 Local-only consumers install the wheel:
 
 ```bash
-python -m pip install ./dist/drf_unified_rbac-0.2.0-py3-none-any.whl
+python -m pip install ./dist/drf_unified_rbac-0.3.0-py3-none-any.whl
 ```
 
 SSO and Hybrid consumers install the SSO extra:
 
 ```bash
-python -m pip install "./dist/drf_unified_rbac-0.2.0-py3-none-any.whl[sso]"
+python -m pip install "./dist/drf_unified_rbac-0.3.0-py3-none-any.whl[sso]"
 ```
 
 The distribution name is `drf-unified-rbac`; its import and Django app name is
@@ -85,7 +87,7 @@ urlpatterns = [path("api/rbac/", include("drf_unified_rbac.urls"))]
 ```
 
 Run `python manage.py migrate`. The existing initial migration creates Role,
-Permission, RolePermission and UserRole. Version 0.2.0 needs no new schema
+Permission, RolePermission and UserRole. Version 0.3.0 needs no new schema
 migration. UserRole references the host's `AUTH_USER_MODEL`.
 
 | AUTH_MODE | Accepted principal | Role source |
@@ -154,27 +156,30 @@ DRF_RBAC = {
 }
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
-        "rest_framework.authentication.SessionAuthentication",
         "drf_unified_rbac.authentication.KeycloakAuthentication",
+        "rest_framework.authentication.SessionAuthentication",
     ],
 }
 ```
 
-DRF uses the first authenticator that succeeds. With the order above, an active
-local session takes precedence over a Bearer token. Session-authenticated unsafe
-requests retain DRF's CSRF requirements. The host should choose and document the
-credential precedence it intends, and clients should send the selected identity's
-credentials.
+DRF uses the first authenticator that succeeds. Put KeycloakAuthentication first:
+an invalid Bearer must fail even when a valid local session exists. With no Bearer,
+Keycloak returns None and the host authenticator can handle the local identity.
+Session-authenticated unsafe requests retain DRF CSRF requirements. The package
+me endpoint enforces Keycloak-first in sso/hybrid while retaining host classes.
+Business and Admin APIs still use the host authentication configuration; configure
+the same safe ordering there. No global DRF settings are overwritten.
 
 For host JWT authentication, configure the host class together with
-KeycloakAuthentication, for example `HostLocalAuthentication` followed by
-`KeycloakAuthentication`, **only with an explicit host authentication-routing
-contract**. If both consume `Authorization: Bearer`, listing both classes alone
+KeycloakAuthentication, **only with an explicit host authentication-routing contract**. If both consume `Authorization: Bearer`, listing both classes alone
 does not define safe routing. The host must distinguish which authenticator owns
 the credential, returning `None` only for credentials outside its scheme or
 route, and must fully verify the selected token. Do not catch a failed token
 validation and fall back to another identity. This package does not automatically
-route two Bearer authenticators or reimplement host authentication.
+route two Bearer authenticators or reimplement host authentication. In sso/hybrid,
+the package me endpoint reserves Bearer for Keycloak. A host using its own Bearer
+tokens must expose a host-owned MeView subclass with explicit get_authenticators
+routing, or use separate routes; never fall back after failed verification.
 
 ## APIView and ViewSet usage
 
@@ -242,14 +247,14 @@ order (Keycloak-only uses 401; session-first commonly uses 403).
 ### Frontend Hybrid flow
 
 ```text
-Local login button -> host local login API -> keep host credentials -> GET /api/rbac/me
+Local login button -> package or host local login API -> keep host credentials -> GET /api/rbac/me
 SSO login button   -> Keycloak code flow -> callback/access token -> GET /api/rbac/me
 ```
 
 After either flow, menus, routes, pages and buttons consume `me.permissions`.
 The post-login authorization logic is identical; do not derive permissions from
 `auth_source` or usernames. Server-side RBAC remains authoritative. The frontend,
-redirect/callback handling and host local login are outside this package.
+redirect/callback handling and existing host login implementation remain host-owned.
 
 ## RBAC Admin API
 
@@ -390,7 +395,7 @@ python example_project/manage.py runserver
 The example's Local mode retains SessionAuthentication and BasicAuthentication.
 Set `DRF_RBAC_AUTH_MODE` to `sso` or `hybrid` and configure
 `DRF_RBAC_KEYCLOAK_ISSUER`, `DRF_RBAC_KEYCLOAK_CLIENT_ID`, and optionally
-`DRF_RBAC_KEYCLOAK_AUDIENCE`. Hybrid adds KeycloakAuthentication after the local
+`DRF_RBAC_KEYCLOAK_AUDIENCE`. Hybrid puts KeycloakAuthentication before the local
 classes. Business examples are ViewSet `/api/orders/` and APIView
 `/api/order-details/<id>/`, using seeded `demo.order.*` permissions.
 
@@ -409,7 +414,7 @@ Verify the built wheel in a **new** virtual environment:
 ```bash
 python -m venv .venv-wheel-check
 # Activate its Scripts/Activate.ps1 on Windows or bin/activate on POSIX.
-python -m pip install "./dist/drf_unified_rbac-0.2.0-py3-none-any.whl[sso]"
+python -m pip install "./dist/drf_unified_rbac-0.3.0-py3-none-any.whl[sso]"
 python -m pip check
 python -I -c "import drf_unified_rbac; print(drf_unified_rbac.__version__, drf_unified_rbac.__file__)"
 python -m pip install "pytest>=8.0" "pytest-django>=4.8"
@@ -424,7 +429,7 @@ Keycloak server is needed. Actual release checks are recorded in
 
 ## Upgrade from 0.1.x
 
-- Install 0.2.0; include `[sso]` for Keycloak authentication.
+- Install 0.3.0; include `[sso]` for Keycloak authentication.
 - Keep the existing host login and business ViewSet mappings. Select `hybrid`
   only when both local and SSO identities should be authorized.
 - Keep the same URL include and `/api/rbac/me` fields. New admin routes live below
@@ -440,3 +445,115 @@ Keycloak server is needed. Actual release checks are recorded in
 Object-level permissions, data scopes, ABAC, multi-tenancy, user synchronization,
 Keycloak administration, frontend code and host credential management remain
 outside this release.
+
+
+## V3 Local Login Adapter
+
+Four supported integration paths share the existing authorization core:
+
+| Scenario | Authentication path | Authorization path |
+| --- | --- | --- |
+| A: New Django project | package login -> LocalAuthAdapter -> Django authenticate/login -> Session -> request.user | Principal.from_user -> LocalRoleProvider -> RBAC |
+| B: Existing host Local | host login/authenticator -> request.user; no package adapter call | Principal.from_user -> LocalRoleProvider -> RBAC |
+| C: Keycloak | verified Bearer -> KeycloakAuthentication -> SSOUser | Principal.from_sso (or from_user) -> SSORoleProvider -> RBAC |
+| D: Hybrid | Keycloak Bearer first, otherwise host/Session authentication | auth_source selects one provider -> unified me and permissions |
+
+RBAC here means AuthorizationService -> Role/RolePermission/Permission. Local
+assignments use UserRole. Django user.has_perm and Django Permission do not
+replace RBAC grants. Authentication is never repeated inside RBACPermission,
+AuthorizationService, or me.
+
+Configuration uses the existing dictionary only:
+
+```python
+DRF_RBAC = {
+    "AUTH_MODE": "local",  # local / sso / hybrid
+    "LOCAL_LOGIN_ENABLED": True,
+    "LOCAL_AUTH_ADAPTER": "drf_unified_rbac.authentication.adapters.DjangoLocalAuthAdapter",
+}
+```
+
+LOCAL_LOGIN_ENABLED must be a boolean, and LOCAL_AUTH_ADAPTER a dotted class
+path. Invalid settings or adapter construction raise ImproperlyConfigured; they
+never grant access. Adapters load lazily per login, with no shared request state.
+Existing Keycloak issuer/client/audience settings retain their meaning.
+
+New projects enable django.contrib.auth/contenttypes/sessions, SessionMiddleware,
+CsrfViewMiddleware, AuthenticationMiddleware, and DRF SessionAuthentication.
+Run migrate and provision users using normal Django tools. No RBAC User model,
+password table, JWT signing, or additional dependency is introduced.
+
+| Endpoint (no trailing slash) | Result |
+| --- | --- |
+| GET /api/rbac/auth/local/csrf | 200 {"csrfToken": "..."}, no-store; initialize CSRF cookie/session |
+| POST /api/rbac/auth/local/login | username/password -> 200 {"authenticated": true} |
+| POST /api/rbac/auth/local/logout | flush Django session -> 204 (also safe when already logged out) |
+
+Login accepts JSON or form username/password strings. Wrong password, unknown or
+inactive user, rejected/invalid adapter identity all return the same 401 detail:
+Authentication failed. Invalid JSON is a DRF 400. Missing/invalid CSRF is 403.
+Login does not compute roles or permissions; call GET /api/rbac/me afterward.
+Login rotates the CSRF secret: get a fresh token before logout. Both POSTs enforce
+CSRF even for anonymous callers. Clients preserve cookies and send X-CSRFToken.
+The CSRF endpoint also supports CSRF_USE_SESSIONS and CSRF_COOKIE_HTTPONLY.
+Logout ends only the Django session, not a Keycloak session or access token.
+
+All three local endpoints return 404 when LOCAL_LOGIN_ENABLED=False or AUTH_MODE
+is sso. Host-authenticated Local users and authorization continue to work when
+the endpoints are disabled. me and protected APIs never load the Local adapter.
+
+To customize credential verification, subclass BaseLocalAuthAdapter and configure
+its dotted path. Implement authenticate(request, **credentials), returning a
+persisted, active Django-compatible local user or None / AuthenticationFailed.
+The package endpoint passes username/password; translate them in the adapter for
+custom backend needs. Direct callers can supply additional credentials. Delegate
+to django.contrib.auth.authenticate whenever possible: it sets user.backend.
+With multiple AUTHENTICATION_BACKENDS a custom adapter must set the correct
+backend path, whose get_user can restore this user from the session. Adapters
+must not compute RBAC grants. Exception details are not returned to clients.
+
+### Example Local session walkthrough
+
+After migrate, seed_demo_rbac and createsuperuser, assign a demo role (staff or
+superuser alone does not grant RBAC business permissions):
+
+```python
+# python example_project/manage.py shell
+from django.contrib.auth import get_user_model
+from drf_unified_rbac.models import Role, UserRole
+user = get_user_model().objects.get_by_natural_key("admin")
+UserRole.objects.get_or_create(user=user, role=Role.objects.get(code="demo_admin"))
+```
+
+Start runserver, then execute this client script using Python's standard library:
+
+```python
+import getpass
+import http.cookiejar
+import json
+from urllib.request import build_opener, HTTPCookieProcessor, Request
+
+client = build_opener(HTTPCookieProcessor(http.cookiejar.CookieJar()))
+base = "http://127.0.0.1:8000"
+def call(path, data=None, token=None):
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["X-CSRFToken"] = token
+    body = None if data is None else json.dumps(data).encode()
+    with client.open(Request(base + path, body, headers)) as response:
+        payload = response.read()
+        return json.loads(payload) if payload else response.status
+
+token = call("/api/rbac/auth/local/csrf")["csrfToken"]
+print(call("/api/rbac/auth/local/login", {
+    "username": "admin", "password": getpass.getpass(),
+}, token))
+print(call("/api/rbac/me"))
+print(call("/api/orders/"))
+token = call("/api/rbac/auth/local/csrf")["csrfToken"]
+print(call("/api/rbac/auth/local/logout", {}, token))
+# A subsequent me request is rejected as unauthenticated.
+```
+
+See [V2 to V3 migration](docs/migration-v2-v3.md) for compatibility and Hybrid
+credential precedence changes.

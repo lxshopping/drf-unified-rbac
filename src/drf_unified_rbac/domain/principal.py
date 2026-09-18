@@ -61,6 +61,13 @@ class Principal:
         return cls.from_local_user(user)
 
     @classmethod
+    def from_sso(cls, user: Any) -> "Principal":
+        """Explicit boundary for an authenticated SSOUser with verified claims."""
+        if getattr(user, "auth_source", None) != "sso":
+            raise ValueError("User is not an SSO identity")
+        return cls.from_user(user)
+
+    @classmethod
     def from_local_user(cls, user: Any) -> "Principal":
         """Adapt an authenticated Django user to a local principal."""
         if not getattr(user, "is_authenticated", False):
